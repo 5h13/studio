@@ -50,7 +50,8 @@
 
         <div id="loader" class="absolute inset-0 z-40 hidden flex-col items-center justify-center gap-2.5 bg-slate-950/80 backdrop-blur-sm">
           <div class="h-9 w-9 animate-spin rounded-full border-[3px] border-amber-500/20 border-t-amber-400"></div>
-          <p id="loader-text" class="text-xs font-semibold text-amber-100">Working…</p>
+          <p id="loader-text" class="px-6 text-center text-xs font-semibold text-amber-100">Working…</p>
+          <button id="loader-cancel" class="btn hidden !px-4 !py-1.5">Cancel</button>
         </div>
 
         <div id="empty-state" class="absolute inset-0 z-20 hidden flex-col items-center justify-center gap-3 bg-slate-900 p-6 text-center">
@@ -150,8 +151,14 @@
       </div>
       <p class="text-[10px] text-slate-500">The label photo is only read for text — your product photo stays as is.</p>
       <div id="ocr-chips-box" class="hidden rounded-xl border border-slate-800 bg-slate-950/70 p-2">
-        <span class="sec mb-1 block">Tap to use as title · long-press for subtitle</span>
-        <div id="ocr-chips" class="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto"></div>
+        <div class="flex gap-2">
+          <img id="ocr-thumb" alt="Label photo that was read" class="h-14 w-20 shrink-0 rounded-md border border-slate-700 object-cover" />
+          <div class="min-w-0 flex-1">
+            <span class="sec mb-1 block">Tap = title · hold = subtitle</span>
+            <p id="ocr-empty" class="hidden text-[11px] leading-snug text-slate-400">Nothing readable. Move closer so the label fills the frame, hold still, and avoid glare.</p>
+            <div id="ocr-chips" class="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto"></div>
+          </div>
+        </div>
       </div>
       <div>
         <label class="lbl" for="title-input">Title</label>
@@ -296,15 +303,25 @@
       <span id="camera-hint" class="rounded-full border border-slate-700 bg-slate-800/80 px-3 py-1 text-xs text-white">Fill the square</span>
       <button id="torch-btn" class="btn-touch rounded-full bg-slate-800/80 p-2 text-white" aria-label="Flash"><svg aria-hidden="true" class="lucide h-5 w-5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /> </svg></button>
     </div>
-    <div class="relative flex flex-1 items-center justify-center overflow-hidden">
+    <div id="camera-stage" class="relative flex flex-1 touch-none items-center justify-center overflow-hidden">
       <video id="camera-feed" autoplay playsinline muted class="absolute inset-0 h-full w-full object-cover"></video>
       <div id="camera-guide" class="pointer-events-none relative aspect-square w-[88vw] max-w-[420px] rounded-2xl border-2 border-amber-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"></div>
       <p id="camera-tip" class="absolute bottom-4 left-1/2 hidden w-[88vw] max-w-[420px] -translate-x-1/2 rounded-lg bg-black/60 px-3 py-2 text-center text-[11px] text-slate-200">Hold steady, close enough that the text is sharp. Avoid glare.</p>
     </div>
-    <div class="safe-pb z-10 flex items-center justify-around bg-black/75 px-6 pb-6 pt-4">
+    <div class="safe-pb z-10 bg-black/75 px-6 pb-6 pt-3">
+     <div class="mb-3 flex items-center justify-center gap-2">
+      <div id="zoom-chips" class="flex items-center gap-1 rounded-full bg-slate-900/90 p-1">
+        <button class="zoom-chip btn-touch h-9 min-w-9 rounded-full px-2 text-xs font-bold text-slate-200" data-z="1">1×</button>
+        <button class="zoom-chip btn-touch h-9 min-w-9 rounded-full px-2 text-xs font-bold text-slate-200" data-z="2">2×</button>
+        <button class="zoom-chip btn-touch h-9 min-w-9 rounded-full px-2 text-xs font-bold text-slate-200" data-z="3">3×</button>
+      </div>
+      <span id="zoom-label" class="w-24 text-[11px] text-slate-400">Pinch to zoom</span>
+     </div>
+     <div class="flex items-center justify-around">
       <button id="flip-btn" class="btn-touch rounded-full bg-slate-800 p-3 text-white" aria-label="Switch camera"><svg aria-hidden="true" class="lucide h-6 w-6" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" /> </svg></button>
       <button id="shutter-btn" class="btn-touch flex h-20 w-20 items-center justify-center rounded-full border-4 border-white bg-amber-500 p-1" aria-label="Take photo"><span class="h-full w-full rounded-full bg-white"></span></button>
       <label class="btn-touch cursor-pointer rounded-full bg-slate-800 p-3 text-white" aria-label="Pick from library"><svg aria-hidden="true" class="lucide h-6 w-6" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /> </svg><input type="file" id="camera-gallery-input" accept="image/*" class="hidden" /></label>
+     </div>
     </div>
   </div>
 

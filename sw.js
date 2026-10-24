@@ -1,5 +1,5 @@
 /* 5H13studio service worker — app shell offline, everything else stale-while-revalidate */
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 const SHELL = `5h13-shell-${VERSION}`;
 const RUNTIME = '5h13-runtime';
 const SHELL_FILES = [

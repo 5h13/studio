@@ -2,10 +2,10 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.4.1';
+  const APP_VERSION = '1.5.0';
   const SIZE = 1080;          // output square
   const MAX_DIM = 1200;       // working resolution for photos (keeps phones fast)
-  const UNDO_LIMIT = 10;
+  const UNDO_LIMIT = 6;
   const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 
   const $ = (id) => document.getElementById(id);
@@ -800,67 +800,176 @@
   $('font-select').value = S.font;
   $('font-select').addEventListener('change', e => { S.font = e.target.value; saveSettings(); render(); });
 
-  // OCR (Tesseract loads only when first used)
-  let tesseractLoading;
+  // =====================================================================
+  //  LABEL READING (OCR) — engine loads on first use, one worker reused, freed when idle
+  // =====================================================================
+  let tesseractLoading, ocrWorker = null, ocrIdleTimer = null, ocrBusy = false, ocrCancel = null;
+  const OCR_MIN_CONF = 58;
+  const OCR_LOAD_TIMEOUT = 60000;   // first-time download + start of the reader
+  const OCR_PASS_TIMEOUT = 25000;   // one reading pass
+  const OCR_BUDGET = 40000;         // stop trying extra passes after this
   function loadTesseract() {
     if (window.Tesseract) return Promise.resolve();
     tesseractLoading ??= new Promise((res, rej) => {
       const s = document.createElement('script');
-      s.src = TESSERACT_URL; s.onload = res; s.onerror = () => { tesseractLoading = null; rej(new Error('net')); };
+      s.src = TESSERACT_URL; s.onload = res; s.onerror = () => { tesseractLoading = null; s.remove(); rej(new Error('net')); };
       document.head.appendChild(s);
     });
     return tesseractLoading;
   }
-  // Prepares a label photo for OCR: upscale small shots, grayscale + contrast stretch
-  function prepForOCR(source) {
-    const sw = source.naturalWidth || source.width, sh = source.naturalHeight || source.height;
-    const k = Math.min(2.5, Math.max(1, 1600 / Math.max(sw, sh)), 2000 / Math.max(sw, sh));
-    const c = document.createElement('canvas');
-    c.width = Math.round(sw * k); c.height = Math.round(sh * k);
-    const g = c.getContext('2d', { willReadFrequently: true });
-    g.imageSmoothingQuality = 'high';
-    g.drawImage(source, 0, 0, c.width, c.height);
-    const img = g.getImageData(0, 0, c.width, c.height), d = img.data;
-    let lo = 255, hi = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      d[i] = y; if (y < lo) lo = y; if (y > hi) hi = y;
+  // Live progress from the reader so the screen never looks frozen
+  let ocrPhase = 'Reading label…';
+  function ocrLogger(m) {
+    const pct = Math.round((m.progress || 0) * 100);
+    const el = $('loader-text');
+    if (m.status === 'recognizing text') el.textContent = `${ocrPhase} ${pct}%`;
+    else if (/load|download|initializ/i.test(m.status)) el.textContent = `Preparing text reader… ${pct}%`;
+  }
+  async function getOcrWorker() {
+    clearTimeout(ocrIdleTimer);
+    if (!ocrWorker) {
+      await loadTesseract();
+      ocrWorker = await Tesseract.createWorker('eng', 1, { logger: ocrLogger, errorHandler: e => console.error('OCR worker', e) });
     }
-    const span = Math.max(1, hi - lo);
-    for (let i = 0; i < d.length; i += 4) { const v = (d[i] - lo) * 255 / span; d[i] = d[i + 1] = d[i + 2] = v; }
-    g.putImageData(img, 0, 0);
+    return ocrWorker;
+  }
+  async function killOcrWorker() {
+    clearTimeout(ocrIdleTimer);
+    const w = ocrWorker; ocrWorker = null;
+    try { await w?.terminate(); } catch {}
+  }
+  function releaseOcrWorkerSoon() {
+    clearTimeout(ocrIdleTimer);
+    ocrIdleTimer = setTimeout(killOcrWorker, 30000);
+  }
+  // Race a step against Cancel and a time limit
+  function guarded(promise, ms, cancelP) {
+    let t;
+    const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('timeout')), ms); });
+    return Promise.race([promise, timeout, cancelP]).finally(() => clearTimeout(t));
+  }
+  $('loader-cancel').addEventListener('click', () => ocrCancel?.());
+  // Downscale (never above maxDim, never upscale more than 2x) and optionally rotate
+  function ocrCanvas(source, maxDim, rot = 0) {
+    const sw = source.naturalWidth || source.width, sh = source.naturalHeight || source.height;
+    const k = Math.min(2, maxDim / Math.max(sw, sh));
+    const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
+    const c = document.createElement('canvas');
+    const side = rot % 180 !== 0;
+    c.width = side ? h : w; c.height = side ? w : h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.imageSmoothingQuality = 'high';
+    g.translate(c.width / 2, c.height / 2); g.rotate(rot * Math.PI / 180);
+    g.drawImage(source, -w / 2, -h / 2, w, h);
     return c;
+  }
+  function cleanLine(t) {
+    return t.replace(/\|/g, '/').replace(/[\\_~`^*<>{}\[\]=»«“”"]/g, ' ').replace(/[—–]+/g, '-')
+      .replace(/\s+/g, ' ').replace(/^[\s\-.,:;'/]+|[\s\-,:;'/]+$/g, '').trim();
+  }
+  // Confident lines only: trim junk words at the edges, require real letters/digits.
+  // Each line keeps a normalised position so passes at different sizes can be merged.
+  function goodLines(data, W, H) {
+    const out = [];
+    for (const l of data.lines || []) {
+      let words = l.words && l.words.length ? [...l.words] : [{ text: l.text, confidence: l.confidence }];
+      while (words.length && words[0].confidence < 40) words.shift();
+      while (words.length && words[words.length - 1].confidence < 40) words.pop();
+      if (!words.length) continue;
+      const text = cleanLine(words.map(w => w.text).join(' '));
+      const chars = text.replace(/\s/g, '');
+      const alnum = (text.match(/[\p{L}\p{N}]/gu) || []).length;
+      const len = words.reduce((a, w) => a + w.text.length, 0) || 1;
+      const conf = words.reduce((a, w) => a + w.confidence * w.text.length, 0) / len;
+      if (alnum < 3 || conf < OCR_MIN_CONF || alnum / chars.length < 0.6) continue;
+      const bb = l.bbox || { x0: 0, y0: 0, x1: W, y1: H };
+      out.push({ text, conf, alnum, x0: bb.x0 / W, x1: bb.x1 / W, y: (bb.y0 + bb.y1) / 2 / H });
+    }
+    return out;
+  }
+  // Combine two passes: same line (similar position) → keep the more confident reading
+  function mergeLines(a, b) {
+    const res = [...a];
+    for (const l of b) {
+      const i = res.findIndex(r => Math.abs(r.y - l.y) < 0.035 && Math.min(r.x1, l.x1) - Math.max(r.x0, l.x0) > 0.3 * Math.min(r.x1 - r.x0, l.x1 - l.x0));
+      if (i < 0) res.push(l); else if (l.conf > res[i].conf) res[i] = l;
+    }
+    return res.sort((p, q) => p.y - q.y);
+  }
+  const scoreLines = ls => ls.reduce((a, l) => a + l.conf * l.alnum, 0);
+  async function readAt(worker, source, maxDim, rot, cancelP) {
+    const c = ocrCanvas(source, maxDim, rot);
+    try {
+      const res = await guarded(worker.recognize(c), OCR_PASS_TIMEOUT, cancelP);
+      return goodLines(res.data, c.width, c.height);
+    } finally { c.width = c.height = 0; }
+  }
+
+  function showOcrResults(lines, thumb) {
+    const box = $('ocr-chips'); box.innerHTML = '';
+    $('ocr-thumb').src = thumb;
+    $('ocr-chips-box').classList.remove('hidden');
+    $('ocr-empty').classList.toggle('hidden', lines.length > 0);
+    lines.slice(0, 8).forEach(({ text }) => {
+      const chip = document.createElement('button');
+      chip.className = 'btn-touch rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-amber-200';
+      chip.textContent = text;
+      let pressTimer, long = false;
+      chip.addEventListener('pointerdown', () => { long = false; pressTimer = setTimeout(() => { long = true; setTitle(S.title, text); haptic(20); toast('Set as subtitle'); }, 500); });
+      chip.addEventListener('pointerup', () => clearTimeout(pressTimer));
+      chip.addEventListener('pointerleave', () => clearTimeout(pressTimer));
+      chip.addEventListener('contextmenu', ev => ev.preventDefault());
+      chip.addEventListener('click', () => { if (!long) { setTitle(text.toUpperCase()); toast('Set as title'); } });
+      box.appendChild(chip);
+    });
   }
 
   async function readLabel(source) {
+    if (ocrBusy) return toast('Still reading the last label…');
+    ocrBusy = true;
     setTab('text');
-    loading('Reading label… (first time downloads ~5 MB)');
+    const cancelP = new Promise((_, rej) => { ocrCancel = () => rej(new Error('cancel')); });
+    cancelP.catch(() => {});
+    loading(ocrWorker ? 'Reading label…' : 'Preparing text reader… (first time downloads ~5 MB)');
+    $('loader-cancel').classList.remove('hidden');
+    const started = Date.now(), timeLeft = () => OCR_BUDGET - (Date.now() - started);
     try {
-      await loadTesseract();
-      const res = await Tesseract.recognize(prepForOCR(source), 'eng');
-      const lines = res.data.text.split('\n').map(l => l.replace(/[^\p{L}\p{N}\s.,&'’%+\-·•/]/gu, '').replace(/\s+/g, ' ').trim()).filter(l => l.length > 2);
-      const box = $('ocr-chips'); box.innerHTML = '';
-      if (!lines.length) { $('ocr-chips-box').classList.add('hidden'); toast('No readable text — type the name instead'); return; }
-      $('ocr-chips-box').classList.remove('hidden');
-      lines.slice(0, 8).forEach(line => {
-        const chip = document.createElement('button');
-        chip.className = 'btn-touch rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-amber-200';
-        chip.textContent = line;
-        let pressTimer, long = false;
-        chip.addEventListener('pointerdown', () => { long = false; pressTimer = setTimeout(() => { long = true; setTitle(S.title, line); haptic(20); toast('Set as subtitle'); }, 500); });
-        chip.addEventListener('pointerup', () => clearTimeout(pressTimer));
-        chip.addEventListener('pointerleave', () => clearTimeout(pressTimer));
-        chip.addEventListener('contextmenu', ev => ev.preventDefault());
-        chip.addEventListener('click', () => { if (!long) { setTitle(line.toUpperCase()); toast('Set as title'); } });
-        box.appendChild(chip);
-      });
+      const worker = await guarded(getOcrWorker(), OCR_LOAD_TIMEOUT, cancelP);
+      const thumb = ocrCanvas(source, 320).toDataURL('image/jpeg', 0.7);
+      // 1) Upright at a size that suits big label text
+      ocrPhase = 'Reading label…';
+      let best = await readAt(worker, source, 1000, 0, cancelP);
+      // 2) Weak? Try larger (small print reads better bigger) and keep the best of each line
+      if (scoreLines(best) < 2500 && timeLeft() > 0) {
+        ocrPhase = 'Looking closer…';
+        best = mergeLines(best, await readAt(worker, source, 1600, 0, cancelP));
+      }
+      // 3) Still weak? The photo may be sideways or upside down
+      for (const rot of [90, 270, 180]) {
+        if (scoreLines(best) >= 2500 || timeLeft() <= 0) break;
+        ocrPhase = 'Checking rotation…';
+        const lines = await readAt(worker, source, 800, rot, cancelP);
+        if (scoreLines(lines) > scoreLines(best) * 1.3) best = lines;
+      }
+      showOcrResults(best, thumb);
+      if (!best.length) { toast('Couldn’t read it clearly — move closer, hold steady, avoid glare'); return; }
       if (!S.showBadge) { S.showBadge = true; $('badge-toggle').checked = true; saveSettings(); }
-      setTitle(lines[0].toUpperCase(), lines[1] || S.subtitle);
+      setTitle(best[0].text.toUpperCase(), best[1]?.text ?? S.subtitle);
       toast('Text found — tap a line to use it');
     } catch (err) {
       console.error(err);
-      toast(navigator.onLine ? 'Text reading failed' : 'Text reading needs internet the first time');
-    } finally { loading(null); }
+      const readerWasReady = !!ocrWorker;
+      await killOcrWorker();            // stops any reading still running in the background
+      if (err.message === 'cancel') toast('Stopped');
+      else if (err.message === 'timeout') toast(readerWasReady ? 'Took too long — try a closer, sharper photo' : 'Text reader download timed out — check internet');
+      else toast(navigator.onLine ? 'Text reading failed — try again' : 'Text reading needs internet the first time');
+    } finally {
+      ocrBusy = false; ocrCancel = null;
+      $('loader-cancel').classList.add('hidden');
+      loading(null);
+      if (ocrWorker) releaseOcrWorkerSoon();
+    }
   }
   async function readLabelFile(file) {
     if (!file) return;
@@ -869,7 +978,7 @@
     catch { toast('Could not open that image'); }
     finally { URL.revokeObjectURL(url); }
   }
-  $('scan-label-btn').addEventListener('click', () => openCamera('label'));
+  $('scan-label-btn').addEventListener('click', () => { if (!ocrBusy) openCamera('label'); });
   $('label-file-input').addEventListener('change', e => { readLabelFile(e.target.files[0]); e.target.value = ''; });
 
   // ---------- Store logo panel ----------
@@ -995,21 +1104,79 @@
     try {
       S.cam.stream?.getTracks().forEach(t => t.stop());
       S.cam.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: S.cam.facing }, width: { ideal: 1920 }, height: { ideal: 1920 } }, audio: false
+        video: { facingMode: { ideal: S.cam.facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false
       });
       const v = $('camera-feed');
       v.srcObject = S.cam.stream;
-      v.style.transform = S.cam.facing === 'user' ? 'scaleX(-1)' : '';
+      const track = S.cam.stream.getVideoTracks()[0];
+      if (track?.getCapabilities?.().focusMode?.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
       S.cam.torch = false;
+      setupZoom(track);
       $('camera-modal').classList.remove('hidden'); $('camera-modal').classList.add('flex');
     } catch (err) {
       console.error(err);
       toast(err.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera not available');
     }
   }
+  // ---------- Zoom: real (optical/sensor) zoom when the browser offers it, digital otherwise ----------
+  const zoom = { z: 1, max: 4, hw: null, pending: null, applying: false };
+  function setupZoom(track) {
+    const caps = track?.getCapabilities?.() || {};
+    const zc = caps.zoom;
+    const base = zc && zc.min > 0 ? zc.min : 1;
+    zoom.hw = zc && zc.max / base >= 2 ? { track, base, min: zc.min, max: zc.max, step: zc.step || 0.1 } : null;
+    zoom.max = zoom.hw ? Math.min(zoom.hw.max / base, 8) : 4;
+    document.querySelectorAll('.zoom-chip').forEach(b => b.classList.toggle('hidden', +b.dataset.z > zoom.max + 0.01));
+    setZoom(1, true);
+  }
+  function videoTransform() {
+    const mirror = S.cam.facing === 'user' ? 'scaleX(-1) ' : '';
+    return mirror + (zoom.hw || zoom.z === 1 ? '' : `scale(${zoom.z})`);
+  }
+  async function pushHardwareZoom() {
+    if (zoom.applying || zoom.pending == null) return;
+    zoom.applying = true;
+    const value = zoom.pending; zoom.pending = null;
+    try { await zoom.hw.track.applyConstraints({ advanced: [{ zoom: value }] }); }
+    catch { zoom.hw = null; zoom.max = 4; $('camera-feed').style.transform = videoTransform(); }   // fall back to digital
+    zoom.applying = false;
+    if (zoom.pending != null) pushHardwareZoom();
+  }
+  function setZoom(z, silent) {
+    z = Math.min(zoom.max, Math.max(1, z));
+    zoom.z = Math.round(z * 10) / 10;
+    if (zoom.hw) {
+      const { base, min, max, step } = zoom.hw;
+      zoom.pending = Math.min(max, Math.max(min, Math.round(base * zoom.z / step) * step));
+      pushHardwareZoom();
+    }
+    $('camera-feed').style.transform = videoTransform();
+    $('zoom-label').textContent = zoom.z === 1 ? 'Pinch to zoom' : `${zoom.z.toFixed(1)}× ${zoom.hw ? '' : 'digital'}`.trim();
+    document.querySelectorAll('.zoom-chip').forEach(b => b.classList.toggle('is-on', Math.abs(+b.dataset.z - zoom.z) < 0.05));
+    if (!silent) haptic(6);
+  }
+  document.querySelectorAll('.zoom-chip').forEach(b => b.addEventListener('click', () => setZoom(+b.dataset.z)));
+  // Pinch anywhere on the preview
+  const camPts = new Map(); let camPinch = null;
+  const stage = $('camera-stage');
+  stage.addEventListener('pointerdown', e => {
+    camPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (camPts.size === 2) { const [a, b] = [...camPts.values()]; camPinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zoom.z }; }
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!camPts.has(e.pointerId)) return;
+    camPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (camPinch && camPts.size === 2) { const [a, b] = [...camPts.values()]; setZoom(camPinch.z * Math.hypot(a.x - b.x, a.y - b.y) / camPinch.d, true); }
+  });
+  const camUp = e => { camPts.delete(e.pointerId); if (camPts.size < 2) camPinch = null; };
+  stage.addEventListener('pointerup', camUp); stage.addEventListener('pointercancel', camUp); stage.addEventListener('pointerleave', camUp);
+  // Desktop: mouse wheel zooms
+  stage.addEventListener('wheel', e => { e.preventDefault(); setZoom(zoom.z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), true); }, { passive: false });
+
   function closeCamera() {
     S.cam.stream?.getTracks().forEach(t => t.stop());
     S.cam.stream = null;
+    $('camera-feed').srcObject = null;
     $('camera-modal').classList.add('hidden'); $('camera-modal').classList.remove('flex');
   }
   $('open-camera-btn').addEventListener('click', () => { setTab(null); openCamera('product'); });
@@ -1022,11 +1189,18 @@
     S.cam.torch = !S.cam.torch;
     try { await track.applyConstraints({ advanced: [{ torch: S.cam.torch }] }); toast(`Flash ${S.cam.torch ? 'on' : 'off'}`); } catch { toast('Flash not available'); }
   });
+  let shutterBusy = false;
   $('shutter-btn').addEventListener('click', async () => {
     const v = $('camera-feed');
-    if (!v.videoWidth) return;
+    if (!v.videoWidth || shutterBusy) return;
+    shutterBusy = true;
     haptic(35);
-    // Crop exactly what is inside the on-screen guide (square for products, 4:3 for labels)
+    // let the shake from tapping settle before grabbing the frame (matters for small label text)
+    if (S.cam.mode === 'label') await new Promise(r => setTimeout(r, 350));
+    shutterBusy = false;
+    if (!S.cam.stream) return;
+    // Crop exactly what is inside the on-screen guide (square for products, 4:3 for labels).
+    // getBoundingClientRect includes the digital-zoom scale, so the crop follows the zoom automatically.
     const vr = v.getBoundingClientRect(), gr = $('camera-guide').getBoundingClientRect();
     const k = Math.max(vr.width / v.videoWidth, vr.height / v.videoHeight);
     const offX = (vr.width - v.videoWidth * k) / 2, offY = (vr.height - v.videoHeight * k) / 2;
