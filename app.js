@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.5.1';
   const SIZE = 1080;          // output square
   const MAX_DIM = 1200;       // working resolution for photos (keeps phones fast)
   const UNDO_LIMIT = 6;
@@ -74,9 +74,9 @@
   function toast(msg) {
     const t = $('toast');
     $('toast-text').textContent = msg;
-    t.classList.remove('-translate-y-24', 'opacity-0');
+    t.classList.remove('-translate-y-32', 'opacity-0');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.add('-translate-y-24', 'opacity-0'), 2400);
+    toastTimer = setTimeout(() => t.classList.add('-translate-y-32', 'opacity-0'), Math.max(2400, msg.length * 60));
   }
   function loading(text) {
     const l = $('loader');
