@@ -94,7 +94,7 @@
         </label>
       </div>
       <div class="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 text-xs">
-        <span class="text-slate-300">Auto-remove background on load</span>
+        <span class="text-slate-300">Auto-remove background on load (AI)</span>
         <input type="checkbox" id="auto-strip-toggle" checked class="h-4 w-4 accent-amber-500" />
       </div>
       <div>
@@ -117,13 +117,15 @@
         <button class="tool-btn chip" data-tool="restore"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="m11 10 3 3" /> <path d="M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z" /> <path d="M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031" /> </svg>Restore</button>
       </div>
       <div class="grid grid-cols-2 gap-2">
-        <button id="auto-cutout-btn" class="btn-primary"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /> </svg>Auto remove BG</button>
+        <button id="auto-cutout-btn" class="btn-primary"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /> </svg>Remove BG (AI)</button>
         <button id="reset-cutout-btn" class="btn"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> <path d="M3 3v5h5" /> </svg>Original photo</button>
       </div>
+      <button id="simple-cutout-btn" class="btn w-full">Simple remove (plain backgrounds, works offline)</button>
+      <p class="text-[10px] text-slate-500">The AI remover downloads about 15 MB the first time, then works offline.</p>
       <div class="space-y-1">
         <div class="row"><span>Background tolerance</span><span id="tol-val" class="val">35</span></div>
         <input type="range" id="tol-input" min="5" max="110" value="35" class="slider" />
-        <p class="text-[10px] text-slate-500">Higher removes more. Changes re-run the auto cutout.</p>
+        <p class="text-[10px] text-slate-500">For Simple remove and the Wand. Higher removes more; after Simple remove, changes re-run it.</p>
       </div>
       <div class="space-y-1">
         <div class="row"><span>Brush size</span><span id="brush-val" class="val">28px</span></div>

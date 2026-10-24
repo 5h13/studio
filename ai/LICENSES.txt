@@ -1,0 +1,5 @@
+5H13studio AI background remover (v1.6.0)
+- u2netp.onnx — U^2-Net (small), by Xuebin Qin et al. (https://github.com/xuebinqin/U-2-Net), Apache License 2.0.
+  ONNX file as distributed by rembg (https://github.com/danielgatis/rembg).
+- ort.wasm.min.mjs, ort-wasm-simd-threaded.mjs, ort-wasm-simd-threaded.wasm — ONNX Runtime Web 1.22.0,
+  by Microsoft (https://github.com/microsoft/onnxruntime), MIT License.

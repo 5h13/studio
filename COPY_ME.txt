@@ -1,0 +1,10 @@
+5H13studio v1.6.0 — AI background remover
+
+Copy everything in this folder into C:\Users\Aton Aire\Desktop\studio (replace the files there):
+  app.js, index.html, sw.js, README.md, and the ai folder (5 files).
+Then, in Desktop\studio:
+  git add .
+  git commit -m "v1.6.0: AI background remover"
+  git push
+GitHub Pages updates in a minute or two. Installed phones pick up the new version the next time the app is opened
+(close and reopen it if needed).

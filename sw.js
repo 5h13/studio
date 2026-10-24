@@ -1,5 +1,5 @@
 /* 5H13studio service worker — app shell offline, everything else stale-while-revalidate */
-const VERSION = '1.5.1';
+const VERSION = '1.6.0';
 const SHELL = `5h13-shell-${VERSION}`;
 const RUNTIME = '5h13-runtime';
 const SHELL_FILES = [
@@ -43,9 +43,12 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Own files: cache first
+  // Own files: cache first. The AI remover's files (ai/, ~15 MB) are kept after their first use, not at install.
   if (url.origin === location.origin) {
-    e.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req)));
+    e.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req).then(res => {
+      if (res && res.ok && url.pathname.includes('/ai/')) { const copy = res.clone(); caches.open(RUNTIME).then(c => c.put(req, copy)); }
+      return res;
+    })));
     return;
   }
 

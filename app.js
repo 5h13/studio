@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.5.1';
+  const APP_VERSION = '1.6.0';
   const SIZE = 1080;          // output square
   const MAX_DIM = 1200;       // working resolution for photos (keeps phones fast)
   const UNDO_LIMIT = 6;
@@ -142,7 +142,7 @@
   }
 
   async function afterNewPhoto() {
-    if (S.autoStrip) await autoRemoveBackground(true);
+    if (S.autoStrip) await aiRemoveBackground(true);
     else render();
   }
 
@@ -218,6 +218,102 @@
   function updateUndo() { $('undo-btn').disabled = S.undo.length === 0; }
 
   // Background = colour region connected to the photo's edges (keeps white labels inside the product).
+  // =====================================================================
+  //  AI REMOVER (v1.6.0): U²-Net small (Apache-2.0) on the phone with ONNX Runtime Web (MIT), files in ai/ (~15 MB,
+  //  downloaded the first time, then kept for offline use by the service worker). The colour remover below is the
+  //  "Simple remove" button and the fallback when the AI cannot load.
+  // =====================================================================
+  const AI = { ready: null, loaded: false };
+  const aiUrl = (f) => new URL('ai/' + f, location.href).href;
+  function loadAI() {
+    if (!AI.ready) {
+      AI.ready = (async () => {
+        const ort = await import(aiUrl('ort.wasm.min.mjs'));
+        ort.env.wasm.wasmPaths = aiUrl('');
+        ort.env.wasm.numThreads = 1;               // no special server headers needed (GitHub Pages)
+        const res = await fetch(aiUrl('u2netp.onnx'));
+        if (!res.ok) throw new Error('model');
+        const session = await ort.InferenceSession.create(await res.arrayBuffer(), { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+        AI.loaded = true;
+        return { ort, session };
+      })().catch(e => { AI.ready = null; throw e; });
+    }
+    return AI.ready;
+  }
+  // How solid each pixel is (0 = background … 255 = product), at the working size. Pre/post-processing as in rembg.
+  async function aiMask(photo) {
+    const { ort, session } = await loadAI();
+    const N = 320, MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
+    const small = document.createElement('canvas'); small.width = small.height = N;
+    const sg = small.getContext('2d', { willReadFrequently: true });
+    sg.imageSmoothingQuality = 'high'; sg.drawImage(photo, 0, 0, N, N);
+    const px = sg.getImageData(0, 0, N, N).data;
+    let max = 1e-6; for (let i = 0; i < px.length; i += 4) max = Math.max(max, px[i], px[i + 1], px[i + 2]);
+    const n = N * N, input = new Float32Array(3 * n);
+    for (let p = 0; p < n; p++) for (let c = 0; c < 3; c++) input[c * n + p] = (px[p * 4 + c] / max - MEAN[c]) / STD[c];
+    const out = await session.run({ [session.inputNames[0]]: new ort.Tensor('float32', input, [1, 3, N, N]) });
+    const pred = out[session.outputNames[0]].data;
+    let lo = Infinity, hi = -Infinity; for (let i = 0; i < n; i++) { if (pred[i] < lo) lo = pred[i]; if (pred[i] > hi) hi = pred[i]; }
+    const m = sg.createImageData(N, N);
+    for (let i = 0; i < n; i++) m.data[i * 4 + 3] = Math.round((pred[i] - lo) / Math.max(1e-6, hi - lo) * 255);
+    sg.clearRect(0, 0, N, N); sg.putImageData(m, 0, 0);
+    const w = photo.width, h = photo.height;
+    const big = document.createElement('canvas'); big.width = w; big.height = h;
+    const bg = big.getContext('2d', { willReadFrequently: true });
+    bg.imageSmoothingQuality = 'high'; bg.drawImage(small, 0, 0, w, h);
+    const a = bg.getImageData(0, 0, w, h).data, alpha = new Uint8ClampedArray(w * h);
+    for (let p = 0; p < w * h; p++) {                // firmer: thin faint parts solid, faint haze gone
+      const t = Math.min(1, Math.max(0, (a[p * 4 + 3] / 255 - 0.1) / 0.4));
+      alpha[p] = Math.round(t * t * (3 - 2 * t) * 255);
+    }
+    dropSpecks(alpha, w, h);
+    return alpha;
+  }
+  // pieces much smaller than the biggest one (leftover haze) are removed
+  function dropSpecks(alpha, w, h) {
+    const n = w * h, lab = new Int32Array(n), stack = new Int32Array(n), sizes = [0];
+    let next = 0;
+    for (let s = 0; s < n; s++) {
+      if (alpha[s] < 128 || lab[s]) continue;
+      next++; let top = 0, count = 0; stack[top++] = s; lab[s] = next;
+      while (top) {
+        const p = stack[--top]; count++;
+        const x = p % w;
+        const push = q => { if (!lab[q] && alpha[q] >= 128) { lab[q] = next; stack[top++] = q; } };
+        if (x > 0) push(p - 1); if (x < w - 1) push(p + 1); if (p >= w) push(p - w); if (p < n - w) push(p + w);
+      }
+      sizes.push(count);
+    }
+    if (next < 2) return;
+    const min = Math.max(40, Math.max(...sizes) * 0.02);
+    for (let p = 0; p < n; p++) if (lab[p] && sizes[lab[p]] < min) alpha[p] = 0;
+    for (let p = 0; p < n; p++) if (!lab[p] && alpha[p] < 64) alpha[p] = 0;
+  }
+  async function aiRemoveBackground(fromLoad = false) {
+    if (!S.raw) return toast('Add a photo first');
+    loading(AI.loaded ? 'Removing background…' : 'Loading AI remover (~15 MB, first time only)…');
+    await nextFrame();
+    let alpha;
+    try { alpha = await aiMask(S.raw); }
+    catch (e) {
+      console.error('AI remover', e);
+      loading(null);
+      toast('AI remover could not load (offline?) — used Simple remove');
+      return autoRemoveBackground(fromLoad);
+    }
+    pushUndo();
+    const w = S.work.width, h = S.work.height;
+    const out = new ImageData(new Uint8ClampedArray(S.rawData.data), w, h);
+    for (let p = 0; p < w * h; p++) out.data[p * 4 + 3] = Math.round(out.data[p * 4 + 3] * alpha[p] / 255);
+    S.wctx.putImageData(out, 0, 0);
+    S.lastOpAuto = false;                          // the tolerance slider is for Simple remove
+    computeBBox();
+    if (fromLoad) fitSubject();
+    render();
+    loading(null);
+    toast(S.bbox ? 'Background removed (AI)' : 'Nothing left — try Simple remove');
+  }
+
   async function autoRemoveBackground(fromLoad = false, replaceLast = false) {
     if (!S.raw) return toast('Add a photo first');
     loading('Removing background…');
@@ -775,7 +871,8 @@
   document.querySelectorAll('.demo-btn').forEach(b => b.addEventListener('click', () => { setTab(null); loadDemo(b.dataset.type); }));
 
   // ---------- Cutout panel ----------
-  $('auto-cutout-btn').addEventListener('click', () => autoRemoveBackground(false));
+  $('auto-cutout-btn').addEventListener('click', () => aiRemoveBackground(false));
+  $('simple-cutout-btn').addEventListener('click', () => autoRemoveBackground(false));
   $('reset-cutout-btn').addEventListener('click', resetCutout);
   $('undo-btn').addEventListener('click', undo);
   let tolTimer;
