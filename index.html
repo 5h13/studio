@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <title>5H13studio</title>
+  <meta name="description" content="1:1 product photo studio — background removal, store logos, OCR labels and square export for online stores." />
+  <meta name="theme-color" content="#080C16" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="5H13studio" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="fixed inset-0 flex h-[100dvh] w-full flex-col overflow-hidden bg-slate-950 font-sans text-slate-100">
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="safe-pt z-30 flex shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-900/95 px-3 pb-2 backdrop-blur-xl">
+    <div class="flex items-center gap-2">
+      <img src="icons/icon-192.png" alt="" class="h-9 w-9 rounded-[11px] border border-white/20 shadow-lg shadow-blue-900/40" />
+      <div class="leading-tight">
+        <div class="flex items-center gap-1.5">
+          <span class="font-display text-[15px] font-extrabold tracking-tight text-white">5H13<span class="text-5h13">studio</span></span>
+          <span class="rounded border border-amber-500/40 bg-gradient-to-r from-amber-500/20 via-blue-600/20 to-rose-500/20 px-1 py-px text-[8px] font-extrabold uppercase tracking-wider text-amber-300">1:1 Pro</span>
+        </div>
+        <div id="store-indicator" class="max-w-[140px] truncate text-[10px] text-slate-400">No store logo</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <button id="install-btn" class="btn-touch hidden items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2.5 py-1.5 text-xs font-semibold text-amber-300">
+        <svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 15V3" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path d="m7 10 5 5 5-5" /> </svg><span>Install</span>
+      </button>
+      <button id="info-btn" class="icon-btn" aria-label="App info and install help"><svg aria-hidden="true" class="lucide h-4 w-4 text-amber-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="14" height="20" x="5" y="2" rx="2" ry="2" /> <path d="M12 18h.01" /> </svg></button>
+      <button id="share-btn" class="icon-btn" aria-label="Share image"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <circle cx="18" cy="5" r="3" /> <circle cx="6" cy="12" r="3" /> <circle cx="18" cy="19" r="3" /> <line x1="8.59" x2="15.42" y1="13.51" y2="17.49" /> <line x1="15.41" x2="8.59" y1="6.51" y2="10.49" /> </svg></button>
+      <button id="save-btn" class="btn-primary !px-3 !py-1.5"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 17V3" /> <path d="m6 11 6 6 6-6" /> <path d="M19 21H5" /> </svg><span>Save</span></button>
+    </div>
+  </header>
+
+  <!-- ============ STAGE (square canvas sizes itself to the free space) ============ -->
+  <main class="flex min-h-0 flex-1 flex-col px-3 pt-3">
+   <div class="stage relative min-h-0 flex-1">
+    <div class="flex h-full w-full items-center justify-center">
+      <div id="canvas-card" class="canvas-card relative overflow-hidden rounded-2xl border border-slate-800 shadow-2xl shadow-black/40">
+        <div class="bg-checker absolute inset-0"></div>
+        <canvas id="studio-canvas" width="1080" height="1080" class="relative z-10 block h-full w-full touch-none"></canvas>
+        <div id="reticle" class="pointer-events-none absolute z-30 hidden -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-400/20"></div>
+
+        <div id="loader" class="absolute inset-0 z-40 hidden flex-col items-center justify-center gap-2.5 bg-slate-950/80 backdrop-blur-sm">
+          <div class="h-9 w-9 animate-spin rounded-full border-[3px] border-amber-500/20 border-t-amber-400"></div>
+          <p id="loader-text" class="text-xs font-semibold text-amber-100">Working…</p>
+        </div>
+
+        <div id="empty-state" class="absolute inset-0 z-20 hidden flex-col items-center justify-center gap-3 bg-slate-900 p-6 text-center">
+          <svg aria-hidden="true" class="lucide h-10 w-10 text-slate-500" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /> </svg>
+          <p class="text-sm font-semibold text-slate-200">Add a product photo</p>
+          <p class="text-xs text-slate-400">Shoot it on a plain wall or sheet of paper for the cleanest cutout.</p>
+        </div>
+      </div>
+    </div>
+   </div>
+   <div class="mx-auto flex w-full max-w-md shrink-0 items-center justify-between gap-2 py-2">
+     <div class="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-400">
+       <span class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-400"></span>
+       <span id="mode-label" class="truncate">Drag · pinch to resize</span>
+     </div>
+     <div class="flex shrink-0 items-center gap-1.5">
+       <button id="undo-btn" class="float-btn flex items-center gap-1 !px-2.5 text-[11px]" disabled><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M9 14 4 9l5-5" /> <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" /> </svg>Undo</button>
+       <button id="quick-fit-btn" class="float-btn flex items-center gap-1 !px-2.5 text-[11px]"><svg aria-hidden="true" class="lucide h-3.5 w-3.5 text-amber-300" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <circle cx="12" cy="12" r="10" /> <line x1="22" x2="18" y1="12" y2="12" /> <line x1="6" x2="2" y1="12" y2="12" /> <line x1="12" x2="12" y1="6" y2="2" /> <line x1="12" x2="12" y1="22" y2="18" /> </svg>Fit</button>
+     </div>
+   </div>
+  </main>
+
+  <!-- ============ TOOL PANELS (sit between canvas and nav; never cover the photo) ============ -->
+  <section id="panel" class="hidden max-h-[42dvh] shrink-0 overflow-y-auto overscroll-contain border-t border-slate-800 bg-slate-900 px-4 pb-3 pt-3">
+
+    <!-- PHOTO -->
+    <div class="tab-panel space-y-3" data-panel="photo">
+      <div class="grid grid-cols-2 gap-2.5">
+        <button id="open-camera-btn" class="btn-touch flex flex-col items-center gap-1 rounded-xl border border-amber-500/50 bg-gradient-to-br from-amber-600/25 to-blue-600/15 p-3 text-center">
+          <svg aria-hidden="true" class="lucide h-6 w-6 text-amber-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z" /> <circle cx="12" cy="13" r="3" /> </svg>
+          <span class="text-xs font-bold text-white">Camera</span>
+          <span class="text-[10px] text-slate-400">Square guide · flash</span>
+        </button>
+        <label class="btn-touch flex cursor-pointer flex-col items-center gap-1 rounded-xl border border-slate-700 bg-slate-800/80 p-3 text-center">
+          <svg aria-hidden="true" class="lucide h-6 w-6 text-slate-300" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /> </svg>
+          <span class="text-xs font-bold text-white">Photo library</span>
+          <span class="text-[10px] text-slate-400">JPG · PNG · HEIC*</span>
+          <input type="file" id="gallery-input" accept="image/*" class="hidden" />
+        </label>
+      </div>
+      <div class="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 text-xs">
+        <span class="text-slate-300">Auto-remove background on load</span>
+        <input type="checkbox" id="auto-strip-toggle" checked class="h-4 w-4 accent-amber-500" />
+      </div>
+      <div>
+        <span class="sec mb-1.5 block">Or try a demo</span>
+        <div class="grid grid-cols-3 gap-2">
+          <button class="demo-btn btn" data-type="perfume">🧴 Bottle</button>
+          <button class="demo-btn btn" data-type="sneaker">👟 Sneaker</button>
+          <button class="demo-btn btn" data-type="watch">⌚ Watch</button>
+        </div>
+      </div>
+      <p class="text-[10px] text-slate-500">*HEIC opens in Safari on iPhone. On Android, pick a JPG.</p>
+    </div>
+
+    <!-- CUTOUT -->
+    <div class="tab-panel space-y-3" data-panel="cutout">
+      <div class="grid grid-cols-4 gap-1.5">
+        <button class="tool-btn chip" data-tool="move"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 2v20" /> <path d="m15 19-3 3-3-3" /> <path d="m19 9 3 3-3 3" /> <path d="M2 12h20" /> <path d="m5 9-3 3 3 3" /> <path d="m9 5 3-3 3 3" /> </svg>Move</button>
+        <button class="tool-btn chip" data-tool="wand"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72" /> <path d="m14 7 3 3" /> <path d="M5 6v4" /> <path d="M19 14v4" /> <path d="M10 2v2" /> <path d="M7 8H3" /> <path d="M21 16h-4" /> <path d="M11 3H9" /> </svg>Wand</button>
+        <button class="tool-btn chip" data-tool="erase"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21" /> <path d="m5.082 11.09 8.828 8.828" /> </svg>Erase</button>
+        <button class="tool-btn chip" data-tool="restore"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="m11 10 3 3" /> <path d="M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z" /> <path d="M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031" /> </svg>Restore</button>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="auto-cutout-btn" class="btn-primary"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /> </svg>Auto remove BG</button>
+        <button id="reset-cutout-btn" class="btn"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> <path d="M3 3v5h5" /> </svg>Original photo</button>
+      </div>
+      <div class="space-y-1">
+        <div class="row"><span>Background tolerance</span><span id="tol-val" class="val">35</span></div>
+        <input type="range" id="tol-input" min="5" max="110" value="35" class="slider" />
+        <p class="text-[10px] text-slate-500">Higher removes more. Changes re-run the auto cutout.</p>
+      </div>
+      <div class="space-y-1">
+        <div class="row"><span>Brush size</span><span id="brush-val" class="val">28px</span></div>
+        <input type="range" id="brush-input" min="6" max="90" value="28" class="slider" />
+      </div>
+    </div>
+
+    <!-- TEXT -->
+    <div class="tab-panel space-y-3" data-panel="text">
+      <div class="flex items-center justify-between text-xs">
+        <span class="font-medium text-slate-300">Show product label</span>
+        <input type="checkbox" id="badge-toggle" class="h-4 w-4 accent-amber-500" />
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="scan-label-btn" class="btn-touch flex flex-col items-center gap-1 rounded-xl border border-indigo-500/50 bg-indigo-600/25 p-2.5 text-center">
+          <svg aria-hidden="true" class="lucide h-5 w-5 text-indigo-300" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M3 7V5a2 2 0 0 1 2-2h2" /> <path d="M17 3h2a2 2 0 0 1 2 2v2" /> <path d="M21 17v2a2 2 0 0 1-2 2h-2" /> <path d="M7 21H5a2 2 0 0 1-2-2v-2" /> <path d="M7 8h8" /> <path d="M7 12h10" /> <path d="M7 16h6" /> </svg>
+          <span class="text-xs font-bold text-white">Scan box label</span>
+          <span class="text-[10px] text-slate-400">Opens camera</span>
+        </button>
+        <label class="btn-touch flex cursor-pointer flex-col items-center gap-1 rounded-xl border border-slate-700 bg-slate-800/80 p-2.5 text-center">
+          <svg aria-hidden="true" class="lucide h-5 w-5 text-slate-300" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /> </svg>
+          <span class="text-xs font-bold text-white">Label photo</span>
+          <span class="text-[10px] text-slate-400">From library</span>
+          <input type="file" id="label-file-input" accept="image/*" class="hidden" />
+        </label>
+      </div>
+      <p class="text-[10px] text-slate-500">The label photo is only read for text — your product photo stays as is.</p>
+      <div id="ocr-chips-box" class="hidden rounded-xl border border-slate-800 bg-slate-950/70 p-2">
+        <span class="sec mb-1 block">Tap to use as title · long-press for subtitle</span>
+        <div id="ocr-chips" class="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto"></div>
+      </div>
+      <div>
+        <label class="lbl" for="title-input">Title</label>
+        <input type="text" id="title-input" class="field" maxlength="48" placeholder="Product name" />
+      </div>
+      <div>
+        <label class="lbl" for="subtitle-input">Subtitle</label>
+        <input type="text" id="subtitle-input" class="field" maxlength="64" placeholder="Size, variant, price…" />
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="lbl" for="style-select">Style</label>
+          <select id="style-select" class="field !px-2">
+            <option value="minimal-pill">Glass pill</option>
+            <option value="editorial-bottom">Editorial</option>
+            <option value="luxury-serif">Luxury serif</option>
+            <option value="bold-street">Street bar</option>
+            <option value="clean-watermark">Minimal line</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl" for="font-select">Font</label>
+          <select id="font-select" class="field !px-2">
+            <option value="Bricolage Grotesque">Bricolage</option>
+            <option value="Inter">Inter</option>
+            <option value="Playfair Display">Playfair</option>
+            <option value="Space Grotesk">Space Grotesk</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- STORE LOGO -->
+    <div class="tab-panel space-y-3" data-panel="brand">
+      <div>
+        <span class="sec mb-1.5 block">Which store is this photo for?</span>
+        <div id="store-chips" class="grid grid-cols-4 gap-1.5"></div>
+      </div>
+      <div id="store-editor" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+        <div class="flex items-center gap-3">
+          <div class="bg-checker flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-700">
+            <img id="logo-preview" alt="" class="hidden max-h-full max-w-full object-contain" />
+            <svg aria-hidden="true" id="logo-placeholder" class="lucide h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15 21v-5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v5" /> <path d="M17.774 10.31a1.12 1.12 0 0 0-1.549 0 2.5 2.5 0 0 1-3.451 0 1.12 1.12 0 0 0-1.548 0 2.5 2.5 0 0 1-3.452 0 1.12 1.12 0 0 0-1.549 0 2.5 2.5 0 0 1-3.77-3.248l2.889-4.184A2 2 0 0 1 7 2h10a2 2 0 0 1 1.653.873l2.895 4.192a2.5 2.5 0 0 1-3.774 3.244" /> <path d="M4 10.95V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8.05" /> </svg>
+          </div>
+          <div class="min-w-0 flex-1">
+            <label class="lbl" for="store-name-input">Store name</label>
+            <input type="text" id="store-name-input" class="field" maxlength="24" />
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="btn cursor-pointer"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 3v12" /> <path d="m17 8-5-5-5 5" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> </svg>Upload logo<input type="file" id="logo-input" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="hidden" /></label>
+          <button id="logo-remove-btn" class="btn"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M10 11v6" /> <path d="M14 11v6" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M3 6h18" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /> </svg>Remove logo</button>
+        </div>
+        <div>
+          <span class="lbl">Position</span>
+          <div id="logo-pos" class="grid grid-cols-5 gap-1">
+            <button class="pos-btn chip !py-1.5" data-pos="tl">↖</button>
+            <button class="pos-btn chip !py-1.5" data-pos="tr">↗</button>
+            <button class="pos-btn chip !py-1.5" data-pos="bl">↙</button>
+            <button class="pos-btn chip !py-1.5" data-pos="br">↘</button>
+            <button class="pos-btn chip !py-1.5" data-pos="tc">↑</button>
+          </div>
+        </div>
+        <div class="space-y-1">
+          <div class="row"><span>Logo size</span><span id="logo-size-val" class="val">18%</span></div>
+          <input type="range" id="logo-size-input" min="8" max="40" value="18" class="slider" />
+        </div>
+        <div class="space-y-1">
+          <div class="row"><span>Opacity</span><span id="logo-op-val" class="val">100%</span></div>
+          <input type="range" id="logo-op-input" min="20" max="100" value="100" class="slider" />
+        </div>
+        <p class="text-[10px] text-slate-500">Saved on this phone. Transparent PNG logos look best.</p>
+      </div>
+      <div class="space-y-2 rounded-xl border border-amber-500/30 bg-slate-950/70 p-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2"><span class="bg-5h13 h-4 w-4 rounded-full"></span><span class="text-xs font-bold text-amber-300">5H13 brand stamp</span></div>
+          <input type="checkbox" id="stamp-toggle" class="h-4 w-4 accent-amber-400" />
+        </div>
+        <div id="stamp-pos" class="grid grid-cols-5 gap-1">
+          <button class="stamp-pos-btn chip !py-1.5" data-pos="tl">↖</button>
+          <button class="stamp-pos-btn chip !py-1.5" data-pos="tr">↗</button>
+          <button class="stamp-pos-btn chip !py-1.5" data-pos="bl">↙</button>
+          <button class="stamp-pos-btn chip !py-1.5" data-pos="br">↘</button>
+          <button class="stamp-pos-btn chip !py-1.5" data-pos="bc">↓</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- BACKDROP -->
+    <div class="tab-panel space-y-3" data-panel="backdrop">
+      <div class="grid grid-cols-4 gap-1.5">
+        <button class="bg-btn chip" data-bg="transparent"><span class="bg-checker h-7 w-7 rounded-lg border border-slate-600"></span>Transparent</button>
+        <button class="bg-btn chip" data-bg="white"><span class="h-7 w-7 rounded-lg border border-slate-300 bg-white"></span>White</button>
+        <button class="bg-btn chip" data-bg="5h13-signature"><span class="bg-5h13 h-7 w-7 rounded-lg border border-amber-300/50"></span>5H13 Signature</button>
+        <button class="bg-btn chip" data-bg="sunset-cobalt"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-blue-700 via-indigo-900 to-rose-700"></span>Sunset Cobalt</button>
+        <button class="bg-btn chip" data-bg="warm-stone"><span class="h-7 w-7 rounded-lg bg-gradient-to-b from-stone-50 to-stone-300"></span>Warm stone</button>
+        <button class="bg-btn chip" data-bg="dark-podium"><span class="h-7 w-7 rounded-lg bg-gradient-to-b from-slate-700 to-slate-950"></span>Onyx</button>
+        <button class="bg-btn chip" data-bg="pastel-sky"><span class="h-7 w-7 rounded-lg bg-gradient-to-br from-sky-100 via-rose-50 to-amber-50"></span>Pastel</button>
+        <label class="bg-btn chip cursor-pointer" data-bg="custom"><input type="color" id="custom-color" value="#f1f5f9" class="h-7 w-7 cursor-pointer rounded-lg border-0 bg-transparent p-0" />Custom</label>
+      </div>
+      <div class="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 text-xs">
+        <span class="text-slate-300">Floor shadow</span>
+        <input type="checkbox" id="shadow-toggle" class="h-4 w-4 accent-amber-500" />
+      </div>
+    </div>
+
+    <!-- ADJUST -->
+    <div class="tab-panel space-y-3" data-panel="adjust">
+      <div class="space-y-1">
+        <div class="row"><span>Size</span><span id="scale-val" class="val">100%</span></div>
+        <input type="range" id="scale-input" min="10" max="300" value="100" class="slider" />
+      </div>
+      <div class="space-y-1">
+        <div class="row"><span>Rotation</span><span id="rot-val" class="val">0°</span></div>
+        <input type="range" id="rot-input" min="-180" max="180" value="0" class="slider" />
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="center-btn" class="btn">Center</button>
+        <button id="fit-btn" class="btn">Fit 80%</button>
+        <button id="straight-btn" class="btn">Rotate 0°</button>
+      </div>
+      <p class="text-[10px] text-slate-500">Tip: two fingers on the photo to resize and rotate.</p>
+    </div>
+  </section>
+
+  <!-- ============ BOTTOM NAV ============ -->
+  <nav class="safe-pb z-30 shrink-0 border-t border-slate-800 bg-slate-900/95 px-2 pt-1.5 backdrop-blur-xl">
+    <div class="mx-auto grid max-w-md grid-cols-6">
+      <button class="nav-tab" data-tab="photo"><span class="dot"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z" /> <circle cx="12" cy="13" r="3" /> </svg></span>Photo</button>
+      <button class="nav-tab" data-tab="cutout"><span class="dot"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72" /> <path d="m14 7 3 3" /> <path d="M5 6v4" /> <path d="M19 14v4" /> <path d="M10 2v2" /> <path d="M7 8H3" /> <path d="M21 16h-4" /> <path d="M11 3H9" /> </svg></span>Cutout</button>
+      <button class="nav-tab" data-tab="text"><span class="dot"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M3 7V5a2 2 0 0 1 2-2h2" /> <path d="M17 3h2a2 2 0 0 1 2 2v2" /> <path d="M21 17v2a2 2 0 0 1-2 2h-2" /> <path d="M7 21H5a2 2 0 0 1-2-2v-2" /> <path d="M7 8h8" /> <path d="M7 12h10" /> <path d="M7 16h6" /> </svg></span>Label</button>
+      <button class="nav-tab" data-tab="brand"><span class="dot"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15 21v-5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v5" /> <path d="M17.774 10.31a1.12 1.12 0 0 0-1.549 0 2.5 2.5 0 0 1-3.451 0 1.12 1.12 0 0 0-1.548 0 2.5 2.5 0 0 1-3.452 0 1.12 1.12 0 0 0-1.549 0 2.5 2.5 0 0 1-3.77-3.248l2.889-4.184A2 2 0 0 1 7 2h10a2 2 0 0 1 1.653.873l2.895 4.192a2.5 2.5 0 0 1-3.774 3.244" /> <path d="M4 10.95V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8.05" /> </svg></span>Logo</button>
+      <button class="nav-tab" data-tab="backdrop"><span class="dot"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" /> <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /> <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /> <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /> <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /> </svg></span>Scene</button>
+      <button class="nav-tab" data-tab="adjust"><span class="dot"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M10 5H3" /> <path d="M12 19H3" /> <path d="M14 3v4" /> <path d="M16 17v4" /> <path d="M21 12h-9" /> <path d="M21 19h-5" /> <path d="M21 5h-7" /> <path d="M8 10v4" /> <path d="M8 12H3" /> </svg></span>Adjust</button>
+    </div>
+  </nav>
+
+  <!-- ============ CAMERA ============ -->
+  <div id="camera-modal" class="fixed inset-0 z-50 hidden flex-col bg-black">
+    <div class="safe-pt z-10 flex items-center justify-between bg-black/60 px-4 pb-3">
+      <button id="camera-close-btn" class="btn-touch rounded-full bg-slate-800/80 p-2 text-white" aria-label="Close camera"><svg aria-hidden="true" class="lucide h-5 w-5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M18 6 6 18" /> <path d="m6 6 12 12" /> </svg></button>
+      <span id="camera-hint" class="rounded-full border border-slate-700 bg-slate-800/80 px-3 py-1 text-xs text-white">Fill the square</span>
+      <button id="torch-btn" class="btn-touch rounded-full bg-slate-800/80 p-2 text-white" aria-label="Flash"><svg aria-hidden="true" class="lucide h-5 w-5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /> </svg></button>
+    </div>
+    <div class="relative flex flex-1 items-center justify-center overflow-hidden">
+      <video id="camera-feed" autoplay playsinline muted class="absolute inset-0 h-full w-full object-cover"></video>
+      <div id="camera-guide" class="pointer-events-none relative aspect-square w-[88vw] max-w-[420px] rounded-2xl border-2 border-amber-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"></div>
+      <p id="camera-tip" class="absolute bottom-4 left-1/2 hidden w-[88vw] max-w-[420px] -translate-x-1/2 rounded-lg bg-black/60 px-3 py-2 text-center text-[11px] text-slate-200">Hold steady, close enough that the text is sharp. Avoid glare.</p>
+    </div>
+    <div class="safe-pb z-10 flex items-center justify-around bg-black/75 px-6 pb-6 pt-4">
+      <button id="flip-btn" class="btn-touch rounded-full bg-slate-800 p-3 text-white" aria-label="Switch camera"><svg aria-hidden="true" class="lucide h-6 w-6" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" /> </svg></button>
+      <button id="shutter-btn" class="btn-touch flex h-20 w-20 items-center justify-center rounded-full border-4 border-white bg-amber-500 p-1" aria-label="Take photo"><span class="h-full w-full rounded-full bg-white"></span></button>
+      <label class="btn-touch cursor-pointer rounded-full bg-slate-800 p-3 text-white" aria-label="Pick from library"><svg aria-hidden="true" class="lucide h-6 w-6" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /> </svg><input type="file" id="camera-gallery-input" accept="image/*" class="hidden" /></label>
+    </div>
+  </div>
+
+  <!-- ============ INFO / INSTALL ============ -->
+  <div id="info-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+    <div class="relative w-full max-w-sm space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+      <button id="info-close-btn" class="absolute right-3 top-3 p-1.5 text-slate-400" aria-label="Close"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M18 6 6 18" /> <path d="m6 6 12 12" /> </svg></button>
+      <div class="flex items-center gap-3">
+        <img src="icons/icon-192.png" alt="" class="h-12 w-12 rounded-xl border border-white/30 shadow-xl shadow-blue-600/40" />
+        <div>
+          <h4 class="font-display text-base font-extrabold text-white">5H13<span class="text-5h13">studio</span></h4>
+          <span class="font-mono text-xs text-amber-400">v<span id="app-version"></span> · <span id="sw-status">offline-ready check…</span></span>
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-2 text-center font-mono text-[9px] font-bold">
+        <div><div class="mb-1 h-5 rounded bg-brand-gold"></div><span class="text-amber-400">#FBBF24</span></div>
+        <div><div class="mb-1 h-5 rounded bg-brand-blue"></div><span class="text-blue-400">#2563EB</span></div>
+        <div><div class="mb-1 h-5 rounded bg-brand-crimson"></div><span class="text-red-400">#EF4444</span></div>
+      </div>
+      <div class="space-y-2 text-xs text-slate-300">
+        <div class="space-y-1 rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+          <div class="font-bold text-amber-400">iPhone / iPad</div>
+          <p class="text-[11px] text-slate-400">Open in Safari → tap <b class="text-slate-200">Share</b> → <b class="text-slate-200">Add to Home Screen</b>.</p>
+        </div>
+        <div class="space-y-1 rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+          <div class="font-bold text-amber-400">Android</div>
+          <p class="text-[11px] text-slate-400">Tap <b class="text-slate-200">Install</b> below, or Chrome menu ⋮ → <b class="text-slate-200">Install app</b>.</p>
+        </div>
+        <div class="space-y-1 rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+          <div class="flex items-center gap-1.5 font-bold text-indigo-300"><svg aria-hidden="true" class="lucide h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" /> <path d="M12 22V12" /> <polyline points="3.29 7 12 12 20.71 7" /> <path d="m7.5 4.27 9 5.15" /> </svg>Play Store APK</div>
+          <p class="text-[11px] text-slate-400">Once hosted on HTTPS, paste the URL into PWABuilder.com → Package for Android.</p>
+        </div>
+      </div>
+      <button id="install-modal-btn" class="btn-primary w-full"><svg aria-hidden="true" class="lucide h-4 w-4" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <path d="M12 15V3" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path d="m7 10 5 5 5-5" /> </svg>Install to this device</button>
+    </div>
+  </div>
+
+  <!-- ============ TOAST ============ -->
+  <div id="toast" role="status" class="pointer-events-none fixed left-1/2 top-3 z-[60] flex -translate-x-1/2 -translate-y-24 items-center gap-2 rounded-full border border-amber-500/50 bg-slate-900/95 px-4 py-2.5 text-xs font-semibold text-white opacity-0 shadow-2xl backdrop-blur-md transition-all duration-300">
+    <svg aria-hidden="true" class="lucide h-4 w-4 text-amber-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" > <circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" /> </svg><span id="toast-text"></span>
+  </div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

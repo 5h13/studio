@@ -1,0 +1,1146 @@
+/* 5H13studio — 1:1 product photo studio */
+(() => {
+  'use strict';
+
+  const APP_VERSION = '1.4.1';
+  const SIZE = 1080;          // output square
+  const MAX_DIM = 1200;       // working resolution for photos (keeps phones fast)
+  const UNDO_LIMIT = 10;
+  const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('studio-canvas');
+  const ctx = canvas.getContext('2d');
+
+  // ---------- Safe storage ----------
+  const store = {
+    get(key, fallback) {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+    }
+  };
+
+  // ---------- roundRect fallback (older Safari) ----------
+  if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+      r = Math.min(typeof r === 'number' ? r : 0, w / 2, h / 2);
+      this.moveTo(x + r, y);
+      this.arcTo(x + w, y, x + w, y + h, r);
+      this.arcTo(x + w, y + h, x, y + h, r);
+      this.arcTo(x, y + h, x, y, r);
+      this.arcTo(x, y, x + w, y, r);
+      this.closePath();
+    };
+  }
+
+  // ---------- State ----------
+  const saved = store.get('5h13.settings', {});
+  const S = {
+    raw: null, rawData: null,                 // original pixels at working size
+    work: null, wctx: null,                   // edited cutout
+    bbox: null,                               // visible subject bounds in work coords
+    x: SIZE / 2, y: SIZE / 2, scale: 1, rot: 0,
+    tool: 'move', brush: 28, tol: 35, lastOpAuto: false,
+    undo: [],
+    autoStrip: saved.autoStrip ?? true,
+    showBadge: saved.showBadge ?? true,
+    title: '', subtitle: '',
+    badgeStyle: saved.badgeStyle || 'minimal-pill',
+    font: saved.font || 'Bricolage Grotesque',
+    backdrop: saved.backdrop || 'white',
+    customBg: saved.customBg || '#f1f5f9',
+    shadow: saved.shadow ?? true,
+    stamp: saved.stamp ?? false,
+    stampPos: saved.stampPos || 'br',
+    stores: store.get('5h13.stores', null) || [1, 2, 3].map(n => ({ name: `Store ${n}`, logo: null, pos: 'tr', size: 18, opacity: 100 })),
+    activeStore: store.get('5h13.activeStore', -1),
+    editStore: 0,
+    logoImgs: [null, null, null],
+    cam: { stream: null, facing: 'environment', torch: false, mode: 'product' },
+    installPrompt: null
+  };
+  if (S.activeStore >= 0) S.editStore = S.activeStore;
+
+  const saveSettings = () => store.set('5h13.settings', {
+    autoStrip: S.autoStrip, showBadge: S.showBadge, badgeStyle: S.badgeStyle, font: S.font,
+    backdrop: S.backdrop, customBg: S.customBg, shadow: S.shadow, stamp: S.stamp, stampPos: S.stampPos
+  });
+
+  // ---------- UI helpers ----------
+  const haptic = (ms = 12) => { try { navigator.vibrate && navigator.vibrate(ms); } catch {} };
+  let toastTimer;
+  function toast(msg) {
+    const t = $('toast');
+    $('toast-text').textContent = msg;
+    t.classList.remove('-translate-y-24', 'opacity-0');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.add('-translate-y-24', 'opacity-0'), 2400);
+  }
+  function loading(text) {
+    const l = $('loader');
+    if (text) { $('loader-text').textContent = text; l.classList.remove('hidden'); l.classList.add('flex'); }
+    else { l.classList.add('hidden'); l.classList.remove('flex'); }
+  }
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+  // =====================================================================
+  //  IMAGE LOADING
+  // =====================================================================
+  function loadImageFromURL(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('decode'));
+      img.src = src;
+    });
+  }
+
+  function setImage(source) {
+    const sw = source.naturalWidth || source.videoWidth || source.width;
+    const sh = source.naturalHeight || source.videoHeight || source.height;
+    const k = Math.min(1, MAX_DIM / Math.max(sw, sh));
+    const w = Math.max(1, Math.round(sw * k)), h = Math.max(1, Math.round(sh * k));
+
+    const raw = document.createElement('canvas');
+    raw.width = w; raw.height = h;
+    const rctx = raw.getContext('2d', { willReadFrequently: true });
+    rctx.imageSmoothingQuality = 'high';
+    rctx.drawImage(source, 0, 0, w, h);
+    S.raw = raw;
+    S.rawData = rctx.getImageData(0, 0, w, h);
+
+    S.work = document.createElement('canvas');
+    S.work.width = w; S.work.height = h;
+    S.wctx = S.work.getContext('2d', { willReadFrequently: true });
+    S.wctx.putImageData(S.rawData, 0, 0);
+    S.undo = []; updateUndo();
+    S.lastOpAuto = false;
+    computeBBox();
+    $('empty-state').classList.add('hidden');
+    $('empty-state').classList.remove('flex');
+    fitSubject();
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    loading('Opening photo…');
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await loadImageFromURL(url);
+      setImage(img);
+      closeCamera();
+      setTab(null);
+      await afterNewPhoto();
+    } catch {
+      toast(/hei[cf]/i.test(file.type + file.name) ? 'HEIC not supported here — pick a JPG' : 'Could not open that image');
+    } finally {
+      URL.revokeObjectURL(url);
+      loading(null);
+    }
+  }
+
+  async function afterNewPhoto() {
+    if (S.autoStrip) await autoRemoveBackground(true);
+    else render();
+  }
+
+  // ---------- Demo products ----------
+  function demoCanvas(type) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 1000;
+    const g = c.getContext('2d');
+    const bg = g.createLinearGradient(0, 0, 0, 1000);
+    bg.addColorStop(0, '#f1f5f9'); bg.addColorStop(1, '#e8edf3');
+    g.fillStyle = bg; g.fillRect(0, 0, 1000, 1000);
+    g.textAlign = 'center';
+    if (type === 'perfume') {
+      const cap = g.createLinearGradient(435, 0, 565, 0);
+      cap.addColorStop(0, '#b45309'); cap.addColorStop(0.5, '#fde68a'); cap.addColorStop(1, '#92400e');
+      g.fillStyle = cap; g.beginPath(); g.roundRect(435, 180, 130, 90, 10); g.fill();
+      g.fillStyle = '#cbd5e1'; g.fillRect(470, 268, 60, 36);
+      const glass = g.createLinearGradient(330, 300, 670, 800);
+      glass.addColorStop(0, '#22d3ee'); glass.addColorStop(0.55, '#0284c7'); glass.addColorStop(1, '#0c4a6e');
+      g.fillStyle = glass; g.beginPath(); g.roundRect(330, 300, 340, 500, 44); g.fill();
+      g.fillStyle = 'rgba(255,255,255,.25)'; g.beginPath(); g.roundRect(352, 330, 26, 420, 13); g.fill();
+      g.fillStyle = '#ffffff'; g.beginPath(); g.roundRect(385, 470, 230, 170, 12); g.fill();
+      g.fillStyle = '#0f172a'; g.font = '800 30px "Bricolage Grotesque"'; g.fillText('AURA', 500, 528);
+      g.font = '600 15px Inter'; g.fillStyle = '#0284c7'; g.fillText('PURE ESSENCE', 500, 560);
+      g.font = '500 14px Inter'; g.fillStyle = '#64748b'; g.fillText('50 ml · eau de parfum', 500, 600);
+    } else if (type === 'sneaker') {
+      g.fillStyle = '#0f172a';
+      g.beginPath(); g.moveTo(240, 640); g.quadraticCurveTo(300, 440, 360, 410); g.lineTo(520, 440);
+      g.quadraticCurveTo(640, 520, 790, 560); g.quadraticCurveTo(840, 590, 830, 650); g.lineTo(240, 650); g.closePath(); g.fill();
+      g.fillStyle = '#06b6d4'; g.beginPath(); g.roundRect(225, 640, 620, 52, 18); g.fill();
+      g.fillStyle = '#e2e8f0'; for (let i = 0; i < 4; i++) { g.beginPath(); g.roundRect(400 + i * 34, 452 + i * 14, 26, 8, 4); g.fill(); }
+      g.fillStyle = '#ffffff'; g.font = '800 30px "Bricolage Grotesque"'; g.fillText('SPEED RUNNER', 560, 600);
+    } else {
+      g.fillStyle = '#334155'; g.beginPath(); g.roundRect(440, 140, 120, 720, 24); g.fill();
+      g.fillStyle = '#0f172a'; g.beginPath(); g.arc(500, 500, 180, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = '#94a3b8'; g.lineWidth = 16; g.stroke();
+      g.strokeStyle = '#e2e8f0'; g.lineWidth = 6; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(500, 500); g.lineTo(500, 400); g.moveTo(500, 500); g.lineTo(570, 535); g.stroke();
+      g.fillStyle = '#ffffff'; g.font = '700 22px "Bricolage Grotesque"'; g.fillText('CHRONO', 500, 600);
+    }
+    return c;
+  }
+  const DEMO_TEXT = {
+    perfume: ['AURA PURE ESSENCE', '50 ml · Eau de Parfum'],
+    sneaker: ['SPEED RUNNER', 'Sizes 38–45 · Black/Cyan'],
+    watch: ['CHRONO CLASSIC', '42 mm · Steel case']
+  };
+  async function loadDemo(type) {
+    loading('Loading demo…');
+    await nextFrame();
+    setImage(demoCanvas(type));
+    setTitle(...DEMO_TEXT[type]);
+    loading(null);
+    await afterNewPhoto();
+  }
+
+  // =====================================================================
+  //  CUTOUT ENGINE
+  // =====================================================================
+  function pushUndo() {
+    if (!S.wctx) return;
+    S.undo.push(S.wctx.getImageData(0, 0, S.work.width, S.work.height));
+    if (S.undo.length > UNDO_LIMIT) S.undo.shift();
+    updateUndo();
+  }
+  function undo() {
+    if (!S.undo.length) return;
+    S.wctx.putImageData(S.undo.pop(), 0, 0);
+    S.lastOpAuto = false;
+    updateUndo(); computeBBox(); render();
+    haptic(); toast('Undone');
+  }
+  function updateUndo() { $('undo-btn').disabled = S.undo.length === 0; }
+
+  // Background = colour region connected to the photo's edges (keeps white labels inside the product).
+  async function autoRemoveBackground(fromLoad = false, replaceLast = false) {
+    if (!S.raw) return toast('Add a photo first');
+    loading('Removing background…');
+    await nextFrame();
+
+    if (!replaceLast) pushUndo();
+    const w = S.work.width, h = S.work.height, n = w * h;
+    const src = S.rawData.data;
+    const out = new ImageData(new Uint8ClampedArray(src), w, h);
+    const d = out.data;
+
+    // Background colour = per-channel median of border pixels
+    const rs = [], gs = [], bs = [];
+    const step = Math.max(1, Math.floor((w + h) / 400));
+    const sample = (x, y) => { const i = (y * w + x) * 4; rs.push(src[i]); gs.push(src[i + 1]); bs.push(src[i + 2]); };
+    for (let x = 0; x < w; x += step) { sample(x, 0); sample(x, h - 1); }
+    for (let y = 0; y < h; y += step) { sample(0, y); sample(w - 1, y); }
+    const med = a => { a.sort((p, q) => p - q); return a[a.length >> 1]; };
+    const br = med(rs), bg = med(gs), bb = med(bs);
+
+    const tol = S.tol * 2.2, tolSq = tol * tol;
+    const driftSq = (tol * 0.35) ** 2, farSq = (tol * 2) ** 2;
+    const distBg = (i) => { const r = src[i] - br, g = src[i + 1] - bg, b = src[i + 2] - bb; return r * r + g * g + b * b; };
+
+    const mask = new Uint8Array(n);      // 1 = background
+    const queue = new Int32Array(n);
+    let qh = 0, qt = 0;
+    const seed = (p) => { if (!mask[p] && distBg(p * 4) < tolSq) { mask[p] = 1; queue[qt++] = p; } };
+    for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+
+    while (qh < qt) {
+      const p = queue[qh++], x = p % w, pi = p * 4;
+      const tryN = (q) => {
+        if (mask[q]) return;
+        const qi = q * 4, db = distBg(qi);
+        if (db < tolSq) { mask[q] = 1; queue[qt++] = q; return; }
+        // allow gentle drift (shadows / light falloff on the backdrop)
+        const r = src[qi] - src[pi], g = src[qi + 1] - src[pi + 1], b = src[qi + 2] - src[pi + 2];
+        if (r * r + g * g + b * b < driftSq && db < farSq) { mask[q] = 1; queue[qt++] = q; }
+      };
+      if (x > 0) tryN(p - 1);
+      if (x < w - 1) tryN(p + 1);
+      if (p >= w) tryN(p - w);
+      if (p < n - w) tryN(p + w);
+    }
+
+    // Remove tiny specks left in the background (islands < 0.05% of image)
+    removeSmallIslands(mask, w, h, Math.max(24, Math.floor(n * 0.0005)));
+
+    // Apply mask with a soft 1–2px edge
+    for (let p = 0; p < n; p++) {
+      if (mask[p]) { d[p * 4 + 3] = 0; continue; }
+      const x = p % w;
+      const edge = (x > 0 && mask[p - 1]) || (x < w - 1 && mask[p + 1]) || (p >= w && mask[p - w]) || (p < n - w && mask[p + w]);
+      if (edge) {
+        const db = Math.sqrt(distBg(p * 4));
+        const a = Math.min(1, Math.max(0.35, (db - tol) / (tol * 0.8)));
+        d[p * 4 + 3] = Math.round(d[p * 4 + 3] * a);
+      }
+    }
+
+    S.wctx.putImageData(out, 0, 0);
+    S.lastOpAuto = true;
+    computeBBox();
+    if (fromLoad) fitSubject();
+    render();
+    loading(null);
+    if (!replaceLast) toast(S.bbox ? 'Background removed' : 'Nothing left — lower the tolerance');
+  }
+
+  function removeSmallIslands(mask, w, h, minSize) {
+    const n = w * h, seen = new Uint8Array(n), stack = new Int32Array(n);
+    for (let s = 0; s < n; s++) {
+      if (mask[s] || seen[s]) continue;
+      let top = 0, count = 0; stack[top++] = s; seen[s] = 1;
+      const members = [];
+      while (top) {
+        const p = stack[--top]; count++;
+        if (count <= minSize) members.push(p);
+        const x = p % w;
+        const push = q => { if (!mask[q] && !seen[q]) { seen[q] = 1; stack[top++] = q; } };
+        if (x > 0) push(p - 1); if (x < w - 1) push(p + 1);
+        if (p >= w) push(p - w); if (p < n - w) push(p + w);
+      }
+      if (count < minSize) for (const p of members) mask[p] = 1;
+    }
+  }
+
+  function resetCutout() {
+    if (!S.raw) return;
+    pushUndo();
+    S.wctx.putImageData(S.rawData, 0, 0);
+    S.lastOpAuto = false;
+    computeBBox(); render();
+    toast('Original photo restored');
+  }
+
+  // Magic wand: flood-fills the contiguous colour area you tap
+  function wandAt(cx, cy) {
+    const { x: lx, y: ly } = toLocal(cx, cy);
+    const w = S.work.width, h = S.work.height;
+    const px = Math.floor(lx), py = Math.floor(ly);
+    if (px < 0 || py < 0 || px >= w || py >= h) return;
+    const img = S.wctx.getImageData(0, 0, w, h), d = img.data;
+    const start = py * w + px;
+    if (d[start * 4 + 3] === 0) return toast('Already transparent there');
+    pushUndo();
+    const tr = d[start * 4], tg = d[start * 4 + 1], tb = d[start * 4 + 2];
+    const tolSq = (S.tol * 2.2) ** 2;
+    const n = w * h, seen = new Uint8Array(n), stack = new Int32Array(n);
+    let top = 0, removed = 0;
+    stack[top++] = start; seen[start] = 1;
+    while (top) {
+      const p = stack[--top], i = p * 4;
+      d[i + 3] = 0; removed++;
+      const x = p % w;
+      const push = q => {
+        if (seen[q]) return; seen[q] = 1;
+        const j = q * 4; if (d[j + 3] === 0) return;
+        const r = d[j] - tr, g = d[j + 1] - tg, b = d[j + 2] - tb;
+        if (r * r + g * g + b * b <= tolSq) stack[top++] = q;
+      };
+      if (x > 0) push(p - 1); if (x < w - 1) push(p + 1);
+      if (p >= w) push(p - w); if (p < n - w) push(p + w);
+    }
+    S.wctx.putImageData(img, 0, 0);
+    S.lastOpAuto = false;
+    computeBBox(); render();
+    haptic(15);
+    toast(`Removed ${removed > 9999 ? Math.round(removed / 1000) + 'k' : removed} px`);
+  }
+
+  // Erase / restore brush (soft edge, interpolated strokes)
+  function brushAt(cx, cy, erase) {
+    const { x: px, y: py } = toLocal(cx, cy);
+    const w = S.work.width, h = S.work.height;
+    const r = S.brush / S.scale;
+    const x0 = Math.max(0, Math.floor(px - r)), x1 = Math.min(w - 1, Math.ceil(px + r));
+    const y0 = Math.max(0, Math.floor(py - r)), y1 = Math.min(h - 1, Math.ceil(py + r));
+    if (x0 > x1 || y0 > y1) return;
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    const img = S.wctx.getImageData(x0, y0, bw, bh), d = img.data, raw = S.rawData.data;
+    const soft = Math.max(1, r * 0.25);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dist = Math.hypot(x - px, y - py);
+        if (dist > r) continue;
+        const k = Math.min(1, (r - dist) / soft);          // 0 at rim → 1 inside
+        const i = ((y - y0) * bw + (x - x0)) * 4;
+        if (erase) {
+          d[i + 3] = Math.round(d[i + 3] * (1 - k));
+        } else {
+          const j = (y * w + x) * 4;
+          d[i] = raw[j]; d[i + 1] = raw[j + 1]; d[i + 2] = raw[j + 2];
+          d[i + 3] = Math.max(d[i + 3], Math.round(raw[j + 3] * k));
+        }
+      }
+    }
+    S.wctx.putImageData(img, x0, y0);
+  }
+
+  function computeBBox() {
+    if (!S.work) { S.bbox = null; return; }
+    const w = S.work.width, h = S.work.height;
+    const d = S.wctx.getImageData(0, 0, w, h).data;
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      const row = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        if (d[row + x * 4 + 3] > 24) {
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+    }
+    S.bbox = maxX < 0 ? null : { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+  }
+
+  // =====================================================================
+  //  TRANSFORM
+  // =====================================================================
+  function toLocal(cx, cy) {
+    const a = -S.rot * Math.PI / 180;
+    const dx = cx - S.x, dy = cy - S.y;
+    return {
+      x: (dx * Math.cos(a) - dy * Math.sin(a)) / S.scale + S.work.width / 2,
+      y: (dx * Math.sin(a) + dy * Math.cos(a)) / S.scale + S.work.height / 2
+    };
+  }
+  function subjectBox() { return S.bbox || (S.work ? { x: 0, y: 0, w: S.work.width, h: S.work.height } : null); }
+
+  // Puts the subject's centre at (tx, ty) on the output canvas
+  function placeSubjectCenter(tx, ty) {
+    const b = subjectBox(); if (!b) return;
+    const ox = (b.x + b.w / 2 - S.work.width / 2) * S.scale;
+    const oy = (b.y + b.h / 2 - S.work.height / 2) * S.scale;
+    const a = S.rot * Math.PI / 180;
+    S.x = tx - (ox * Math.cos(a) - oy * Math.sin(a));
+    S.y = ty - (ox * Math.sin(a) + oy * Math.cos(a));
+  }
+  const targetCenterY = () => SIZE / 2 - (S.showBadge && S.title.trim() && S.badgeStyle !== 'clean-watermark' ? 36 : 0);
+  function centerSubject() { placeSubjectCenter(SIZE / 2, targetCenterY()); syncAdjustUI(); render(); }
+  function fitSubject() {
+    const b = subjectBox(); if (!b) return;
+    S.rot = 0;
+    const room = S.showBadge && S.title.trim() && S.badgeStyle !== 'clean-watermark' ? 0.74 : 0.8;
+    S.scale = (SIZE * room) / Math.max(b.w, b.h);
+    placeSubjectCenter(SIZE / 2, targetCenterY());
+    syncAdjustUI(); render();
+  }
+  function syncAdjustUI() {
+    const pct = Math.round(S.scale * 100);
+    $('scale-input').value = Math.min(300, Math.max(10, pct)); $('scale-val').textContent = pct + '%';
+    $('rot-input').value = Math.round(S.rot); $('rot-val').textContent = Math.round(S.rot) + '°';
+  }
+  // Scale/rotate around the subject's current visual centre
+  function setScaleRot(scale, rot) {
+    const b = subjectBox(); if (!b) return;
+    const cx = b.x + b.w / 2 - S.work.width / 2, cy = b.y + b.h / 2 - S.work.height / 2;
+    const a = S.rot * Math.PI / 180;
+    const vx = S.x + (cx * Math.cos(a) - cy * Math.sin(a)) * S.scale;
+    const vy = S.y + (cx * Math.sin(a) + cy * Math.cos(a)) * S.scale;
+    S.scale = Math.min(6, Math.max(0.05, scale)); S.rot = rot;
+    placeSubjectCenter(vx, vy);
+  }
+
+  // =====================================================================
+  //  RENDER
+  // =====================================================================
+  function render(target = ctx) {
+    target.clearRect(0, 0, SIZE, SIZE);
+    drawBackdrop(target);
+    if (S.work) {
+      if (S.shadow && S.bbox) drawShadow(target);
+      target.save();
+      target.imageSmoothingQuality = 'high';
+      target.translate(S.x, S.y);
+      target.rotate(S.rot * Math.PI / 180);
+      target.scale(S.scale, S.scale);
+      target.drawImage(S.work, -S.work.width / 2, -S.work.height / 2);
+      target.restore();
+    }
+    drawLogo(target);
+    if (S.stamp) drawStamp(target);
+    if (S.showBadge && S.title.trim()) drawBadge(target);
+  }
+
+  // 5H13 brand stamp: the official 5Hi3 logo tile
+  let stampImg = null;
+  loadImageFromURL('icons/brand-stamp.png').then(img => { stampImg = img; if (S.stamp) render(); }).catch(() => {});
+  function drawStamp(c) {
+    if (!stampImg) return;
+    const m = 90, pad = 36;
+    const [x, y] = { tl: [pad, pad], tr: [SIZE - m - pad, pad], bl: [pad, SIZE - m - pad], br: [SIZE - m - pad, SIZE - m - pad], bc: [(SIZE - m) / 2, SIZE - m - 25] }[S.stampPos] || [SIZE - m - pad, SIZE - m - pad];
+    c.save();
+    c.shadowColor = 'rgba(0,0,0,0.45)'; c.shadowBlur = 12; c.shadowOffsetY = 4;
+    c.fillStyle = '#2563EB'; c.beginPath(); c.roundRect(x, y, m, m, m * 0.22); c.fill();
+    c.shadowColor = 'transparent';
+    c.clip();
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(stampImg, x, y, m, m);
+    c.restore();
+  }
+
+  function backdropIsDark() {
+    if (S.backdrop === 'dark-podium' || S.backdrop === 'sunset-cobalt' || S.backdrop === '5h13-signature') return true;
+    if (S.backdrop === 'custom') {
+      const v = parseInt(S.customBg.slice(1), 16);
+      const r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
+      return (0.299 * r + 0.587 * g + 0.114 * b) < 140;
+    }
+    return false; // transparent is treated as white (marketplace pages)
+  }
+
+  function drawBackdrop(c) {
+    const bg = S.backdrop;
+    if (bg === 'transparent') return;
+    let fill;
+    if (bg === 'white') fill = '#ffffff';
+    else if (bg === 'custom') fill = S.customBg;
+    else if (bg === 'warm-stone') { fill = c.createLinearGradient(0, 0, 0, SIZE); fill.addColorStop(0, '#fafaf9'); fill.addColorStop(1, '#d6d3d1'); }
+    else if (bg === 'dark-podium') {
+      fill = c.createRadialGradient(SIZE / 2, SIZE * 0.42, SIZE * 0.08, SIZE / 2, SIZE * 0.5, SIZE * 0.78);
+      fill.addColorStop(0, '#334155'); fill.addColorStop(1, '#0b1120');
+    } else if (bg === '5h13-signature') {
+      fill = c.createLinearGradient(0, 0, SIZE, SIZE);
+      fill.addColorStop(0, '#FBBF24'); fill.addColorStop(0.48, '#2563EB'); fill.addColorStop(1, '#EF4444');
+      c.fillStyle = fill; c.fillRect(0, 0, SIZE, SIZE);
+      fill = c.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.1, SIZE / 2, SIZE / 2, SIZE * 0.7);
+      fill.addColorStop(0, 'rgba(255,255,255,0.2)'); fill.addColorStop(1, 'rgba(0,0,0,0.35)');
+    } else if (bg === 'sunset-cobalt') {
+      fill = c.createLinearGradient(0, 0, SIZE, SIZE);
+      fill.addColorStop(0, '#1E40AF'); fill.addColorStop(0.5, '#312E81'); fill.addColorStop(1, '#B91C1C');
+    } else if (bg === 'pastel-sky') {
+      fill = c.createLinearGradient(0, 0, SIZE, SIZE);
+      fill.addColorStop(0, '#e0f2fe'); fill.addColorStop(0.5, '#fce7f3'); fill.addColorStop(1, '#fef3c7');
+    }
+    c.fillStyle = fill; c.fillRect(0, 0, SIZE, SIZE);
+  }
+
+  function drawShadow(c) {
+    const b = S.bbox;
+    // bottom-centre of subject in canvas space (honours rotation)
+    const lx = (b.x + b.w / 2 - S.work.width / 2) * S.scale;
+    const ly = (b.y + b.h - S.work.height / 2) * S.scale;
+    const a = S.rot * Math.PI / 180;
+    const sx = S.x + lx * Math.cos(a) - ly * Math.sin(a);
+    const sy = S.y + lx * Math.sin(a) + ly * Math.cos(a);
+    const rw = Math.max(20, b.w * S.scale * 0.55), rh = Math.max(6, rw * 0.13);
+    const strength = backdropIsDark() ? 0.55 : 0.32;
+    c.save();
+    c.translate(sx, sy - rh * 0.25);
+    c.scale(1, rh / rw);
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, rw);
+    g.addColorStop(0, `rgba(0,0,0,${strength})`);
+    g.addColorStop(0.55, `rgba(0,0,0,${strength * 0.3})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g;
+    c.beginPath(); c.arc(0, 0, rw, 0, Math.PI * 2); c.fill();
+    c.restore();
+  }
+
+  function fitFont(c, text, weight, family, maxSize, maxWidth, style = '') {
+    let size = maxSize;
+    do { c.font = `${style} ${weight} ${size}px "${family}"`.trim(); if (c.measureText(text).width <= maxWidth) break; size -= 1; } while (size > 12);
+    return size;
+  }
+
+  function drawBadge(c) {
+    const title = S.title.trim(), sub = S.subtitle.trim();
+    const dark = backdropIsDark();
+    const ink = dark ? '#ffffff' : '#0f172a', inkSoft = dark ? 'rgba(255,255,255,.75)' : 'rgba(15,23,42,.62)';
+    c.save();
+    c.textBaseline = 'middle';
+    switch (S.badgeStyle) {
+      case 'minimal-pill': {
+        const pw = Math.min(SIZE * 0.84, 760), ph = sub ? 120 : 92;
+        const px = (SIZE - pw) / 2, py = SIZE - ph - 44;
+        c.fillStyle = 'rgba(15,23,42,.84)';
+        c.beginPath(); c.roundRect(px, py, pw, ph, ph / 2); c.fill();
+        c.textAlign = 'center'; c.fillStyle = '#fff';
+        fitFont(c, title, 800, S.font, 40, pw - 90);
+        c.fillText(title, SIZE / 2, py + (sub ? ph * 0.38 : ph / 2));
+        if (sub) { c.fillStyle = 'rgba(255,255,255,.72)'; fitFont(c, sub, 500, S.font, 24, pw - 90); c.fillText(sub, SIZE / 2, py + ph * 0.72); }
+        break;
+      }
+      case 'editorial-bottom': {
+        c.textAlign = 'left'; c.fillStyle = ink;
+        fitFont(c, title, 800, S.font, 54, SIZE - 120);
+        c.fillText(title, 60, SIZE - (sub ? 118 : 80));
+        if (sub) { c.fillStyle = inkSoft; fitFont(c, sub, 500, S.font, 26, SIZE - 120); c.fillText(sub, 60, SIZE - 68); }
+        const bar = c.createLinearGradient(60, 0, 124, 0); bar.addColorStop(0, '#FBBF24'); bar.addColorStop(0.5, '#2563EB'); bar.addColorStop(1, '#EF4444');
+        c.fillStyle = bar; c.fillRect(60, SIZE - (sub ? 168 : 130), 64, 6);
+        break;
+      }
+      case 'luxury-serif': {
+        c.textAlign = 'center'; c.fillStyle = ink;
+        fitFont(c, title, 600, 'Playfair Display', 50, SIZE - 160);
+        c.fillText(title, SIZE / 2, SIZE - (sub ? 128 : 92));
+        if (sub) { c.fillStyle = inkSoft; fitFont(c, `— ${sub} —`, 500, 'Playfair Display', 26, SIZE - 160, 'italic'); c.fillText(`— ${sub} —`, SIZE / 2, SIZE - 80); }
+        break;
+      }
+      case 'bold-street': {
+        c.textAlign = 'left';
+        c.font = `700 40px "Space Grotesk"`;
+        const size = fitFont(c, title, 700, 'Space Grotesk', 42, SIZE - 160);
+        const tw = c.measureText(title).width;
+        const bh = size + 34, by = SIZE - bh - (sub ? 96 : 56);
+        c.fillStyle = '#FBBF24'; c.fillRect(48, by, tw + 56, bh);
+        c.fillStyle = '#020617'; c.fillText(title, 76, by + bh / 2 + 2);
+        if (sub) {
+          fitFont(c, sub, 700, 'Space Grotesk', 24, SIZE - 160);
+          const sw = c.measureText(sub).width;
+          c.fillStyle = '#020617'; c.fillRect(48, by + bh, sw + 56, 46);
+          c.fillStyle = '#ffffff'; c.fillText(sub, 76, by + bh + 24);
+        }
+        break;
+      }
+      default: { // clean-watermark
+        const line = sub ? `${title}  ·  ${sub}` : title;
+        c.textAlign = 'center'; c.fillStyle = dark ? 'rgba(255,255,255,.7)' : 'rgba(15,23,42,.55)';
+        fitFont(c, line, 600, S.font, 24, SIZE - 120);
+        c.fillText(line, SIZE / 2, SIZE - 40);
+      }
+    }
+    c.restore();
+  }
+
+  function drawLogo(c) {
+    if (S.activeStore < 0) return;
+    const st = S.stores[S.activeStore], img = S.logoImgs[S.activeStore];
+    if (!st || !img) return;
+    const maxW = SIZE * st.size / 100, maxH = maxW * 0.6;
+    const k = Math.min(maxW / img.width, maxH / img.height);
+    const w = img.width * k, h = img.height * k, m = 44;
+    const pos = {
+      tl: [m, m], tr: [SIZE - w - m, m], tc: [(SIZE - w) / 2, m],
+      bl: [m, SIZE - h - m], br: [SIZE - w - m, SIZE - h - m]
+    }[st.pos] || [SIZE - w - m, m];
+    c.save();
+    c.globalAlpha = st.opacity / 100;
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(img, pos[0], pos[1], w, h);
+    c.restore();
+  }
+
+  let rafPending = false;
+  const scheduleRender = () => { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; render(); }); };
+
+  // =====================================================================
+  //  POINTER / GESTURES
+  // =====================================================================
+  const pointers = new Map();
+  let drag = null, pinch = null, stroke = null;
+
+  function canvasPoint(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * SIZE / r.width, y: (e.clientY - r.top) * SIZE / r.height, rx: e.clientX - r.left, ry: e.clientY - r.top, rw: r.width };
+  }
+
+  function showReticle(p) {
+    const ret = $('reticle');
+    if (!p || (S.tool !== 'erase' && S.tool !== 'restore')) { ret.classList.add('hidden'); return; }
+    const dia = (S.brush * 2 / SIZE) * p.rw;
+    ret.style.cssText = `left:${p.rx}px;top:${p.ry}px;width:${dia}px;height:${dia}px`;
+    ret.classList.remove('hidden');
+  }
+
+  function startPinch() {
+    const [a, b] = [...pointers.values()];
+    pinch = { d: Math.hypot(b.x - a.x, b.y - a.y), ang: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, scale: S.scale, rot: S.rot, x: S.x, y: S.y };
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!S.work) return;
+    canvas.setPointerCapture(e.pointerId);
+    const p = canvasPoint(e);
+    pointers.set(e.pointerId, p);
+
+    if (pointers.size === 2) {                 // two fingers always transform
+      if (stroke) { stroke = null; }
+      drag = null; startPinch(); showReticle(null);
+      return;
+    }
+    if (pointers.size > 2) return;
+
+    if (S.tool === 'wand') { wandAt(p.x, p.y); return; }
+    if (S.tool === 'erase' || S.tool === 'restore') {
+      pushUndo();
+      stroke = { last: p, erase: S.tool === 'erase' };
+      brushAt(p.x, p.y, stroke.erase); S.lastOpAuto = false;
+      showReticle(p); scheduleRender();
+      return;
+    }
+    drag = { sx: p.x, sy: p.y, ox: S.x, oy: S.y };
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) {
+      if (e.pointerType === 'mouse') showReticle(canvasPoint(e));
+      return;
+    }
+    const p = canvasPoint(e);
+    pointers.set(e.pointerId, p);
+
+    if (pinch && pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      let rot = pinch.rot + (ang - pinch.ang) * 180 / Math.PI;
+      rot = ((rot + 540) % 360) - 180;
+      if (Math.abs(rot) < 3) rot = 0;                            // snap upright
+      const scale = Math.min(6, Math.max(0.05, pinch.scale * d / pinch.d));
+      // keep the point under the fingers' midpoint fixed
+      const k = scale / pinch.scale, da = (rot - pinch.rot) * Math.PI / 180;
+      const vx = pinch.x - pinch.mx, vy = pinch.y - pinch.my;
+      S.x = mx + k * (vx * Math.cos(da) - vy * Math.sin(da));
+      S.y = my + k * (vx * Math.sin(da) + vy * Math.cos(da));
+      S.scale = scale; S.rot = rot;
+      syncAdjustUI(); scheduleRender();
+      return;
+    }
+    if (stroke) {
+      const dist = Math.hypot(p.x - stroke.last.x, p.y - stroke.last.y);
+      const stepLen = Math.max(2, S.brush / 3);
+      const steps = Math.ceil(dist / stepLen);
+      for (let i = 1; i <= steps; i++) {
+        brushAt(stroke.last.x + (p.x - stroke.last.x) * i / steps, stroke.last.y + (p.y - stroke.last.y) * i / steps, stroke.erase);
+      }
+      stroke.last = p;
+      showReticle(p); scheduleRender();
+      return;
+    }
+    if (drag) {
+      S.x = drag.ox + (p.x - drag.sx);
+      S.y = drag.oy + (p.y - drag.sy);
+      scheduleRender();
+    }
+  });
+
+  function endPointer(e) {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.delete(e.pointerId);
+    if (stroke && pointers.size === 0) { stroke = null; computeBBox(); render(); }
+    if (pinch && pointers.size < 2) { pinch = null; drag = null; }
+    if (pointers.size === 0) { drag = null; if (e.pointerType !== 'mouse') showReticle(null); }
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+  canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && !pointers.size) showReticle(null); });
+  canvas.addEventListener('wheel', (e) => {       // desktop: wheel zoom, shift+wheel rotate
+    if (!S.work) return;
+    e.preventDefault();
+    if (e.shiftKey) setScaleRot(S.scale, Math.max(-180, Math.min(180, S.rot + Math.sign(e.deltaY) * 2)));
+    else setScaleRot(S.scale * (e.deltaY < 0 ? 1.06 : 1 / 1.06), S.rot);
+    syncAdjustUI(); scheduleRender();
+  }, { passive: false });
+
+  // =====================================================================
+  //  TABS / PANELS
+  // =====================================================================
+  let currentTab = null;
+  function setTab(tab) {
+    currentTab = tab;
+    $('panel').classList.toggle('hidden', !tab);
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== tab));
+    document.querySelectorAll('.nav-tab').forEach(b => b.classList.toggle('is-on', b.dataset.tab === tab));
+    if (tab !== 'cutout' && S.tool !== 'move') setTool('move', true);
+    if (tab) $('panel').scrollTop = 0;
+  }
+  document.querySelectorAll('.nav-tab').forEach(b => b.addEventListener('click', () => {
+    haptic(8); setTab(currentTab === b.dataset.tab ? null : b.dataset.tab);
+  }));
+
+  const MODE_LABEL = { move: 'Drag · pinch to resize', wand: 'Tap a colour to remove it', erase: 'Paint to erase', restore: 'Paint to bring back' };
+  function setTool(tool, silent) {
+    S.tool = tool;
+    document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('is-on', b.dataset.tool === tool));
+    $('mode-label').textContent = MODE_LABEL[tool];
+    showReticle(null);
+    if (!silent) haptic(8);
+  }
+  document.querySelectorAll('.tool-btn').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+  // ---------- Photo panel ----------
+  $('gallery-input').addEventListener('change', e => { handleFile(e.target.files[0]); e.target.value = ''; });
+  $('camera-gallery-input').addEventListener('change', e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (S.cam.mode === 'label') { closeCamera(); readLabelFile(f); } else handleFile(f);
+  });
+  $('auto-strip-toggle').checked = S.autoStrip;
+  $('auto-strip-toggle').addEventListener('change', e => { S.autoStrip = e.target.checked; saveSettings(); });
+  document.querySelectorAll('.demo-btn').forEach(b => b.addEventListener('click', () => { setTab(null); loadDemo(b.dataset.type); }));
+
+  // ---------- Cutout panel ----------
+  $('auto-cutout-btn').addEventListener('click', () => autoRemoveBackground(false));
+  $('reset-cutout-btn').addEventListener('click', resetCutout);
+  $('undo-btn').addEventListener('click', undo);
+  let tolTimer;
+  $('tol-input').addEventListener('input', e => {
+    S.tol = +e.target.value; $('tol-val').textContent = S.tol;
+    if (S.lastOpAuto) { clearTimeout(tolTimer); tolTimer = setTimeout(() => autoRemoveBackground(false, true), 220); }
+  });
+  $('brush-input').addEventListener('input', e => { S.brush = +e.target.value; $('brush-val').textContent = S.brush + 'px'; });
+
+  // ---------- Label panel ----------
+  function setTitle(title, subtitle) {
+    S.title = title; S.subtitle = subtitle ?? S.subtitle;
+    $('title-input').value = S.title; $('subtitle-input').value = S.subtitle;
+    render();
+  }
+  $('badge-toggle').checked = S.showBadge;
+  $('badge-toggle').addEventListener('change', e => { S.showBadge = e.target.checked; saveSettings(); render(); });
+  $('title-input').addEventListener('input', e => { S.title = e.target.value; scheduleRender(); });
+  $('subtitle-input').addEventListener('input', e => { S.subtitle = e.target.value; scheduleRender(); });
+  $('style-select').value = S.badgeStyle;
+  $('style-select').addEventListener('change', e => { S.badgeStyle = e.target.value; saveSettings(); render(); });
+  $('font-select').value = S.font;
+  $('font-select').addEventListener('change', e => { S.font = e.target.value; saveSettings(); render(); });
+
+  // OCR (Tesseract loads only when first used)
+  let tesseractLoading;
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve();
+    tesseractLoading ??= new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = TESSERACT_URL; s.onload = res; s.onerror = () => { tesseractLoading = null; rej(new Error('net')); };
+      document.head.appendChild(s);
+    });
+    return tesseractLoading;
+  }
+  // Prepares a label photo for OCR: upscale small shots, grayscale + contrast stretch
+  function prepForOCR(source) {
+    const sw = source.naturalWidth || source.width, sh = source.naturalHeight || source.height;
+    const k = Math.min(2.5, Math.max(1, 1600 / Math.max(sw, sh)), 2000 / Math.max(sw, sh));
+    const c = document.createElement('canvas');
+    c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(source, 0, 0, c.width, c.height);
+    const img = g.getImageData(0, 0, c.width, c.height), d = img.data;
+    let lo = 255, hi = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      d[i] = y; if (y < lo) lo = y; if (y > hi) hi = y;
+    }
+    const span = Math.max(1, hi - lo);
+    for (let i = 0; i < d.length; i += 4) { const v = (d[i] - lo) * 255 / span; d[i] = d[i + 1] = d[i + 2] = v; }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
+  async function readLabel(source) {
+    setTab('text');
+    loading('Reading label… (first time downloads ~5 MB)');
+    try {
+      await loadTesseract();
+      const res = await Tesseract.recognize(prepForOCR(source), 'eng');
+      const lines = res.data.text.split('\n').map(l => l.replace(/[^\p{L}\p{N}\s.,&'’%+\-·•/]/gu, '').replace(/\s+/g, ' ').trim()).filter(l => l.length > 2);
+      const box = $('ocr-chips'); box.innerHTML = '';
+      if (!lines.length) { $('ocr-chips-box').classList.add('hidden'); toast('No readable text — type the name instead'); return; }
+      $('ocr-chips-box').classList.remove('hidden');
+      lines.slice(0, 8).forEach(line => {
+        const chip = document.createElement('button');
+        chip.className = 'btn-touch rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-amber-200';
+        chip.textContent = line;
+        let pressTimer, long = false;
+        chip.addEventListener('pointerdown', () => { long = false; pressTimer = setTimeout(() => { long = true; setTitle(S.title, line); haptic(20); toast('Set as subtitle'); }, 500); });
+        chip.addEventListener('pointerup', () => clearTimeout(pressTimer));
+        chip.addEventListener('pointerleave', () => clearTimeout(pressTimer));
+        chip.addEventListener('contextmenu', ev => ev.preventDefault());
+        chip.addEventListener('click', () => { if (!long) { setTitle(line.toUpperCase()); toast('Set as title'); } });
+        box.appendChild(chip);
+      });
+      if (!S.showBadge) { S.showBadge = true; $('badge-toggle').checked = true; saveSettings(); }
+      setTitle(lines[0].toUpperCase(), lines[1] || S.subtitle);
+      toast('Text found — tap a line to use it');
+    } catch (err) {
+      console.error(err);
+      toast(navigator.onLine ? 'Text reading failed' : 'Text reading needs internet the first time');
+    } finally { loading(null); }
+  }
+  async function readLabelFile(file) {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    try { await readLabel(await loadImageFromURL(url)); }
+    catch { toast('Could not open that image'); }
+    finally { URL.revokeObjectURL(url); }
+  }
+  $('scan-label-btn').addEventListener('click', () => openCamera('label'));
+  $('label-file-input').addEventListener('change', e => { readLabelFile(e.target.files[0]); e.target.value = ''; });
+
+  // ---------- Store logo panel ----------
+  function saveStores() {
+    store.set('5h13.activeStore', S.activeStore);
+    if (!store.set('5h13.stores', S.stores)) toast('Phone storage full — logo not saved');
+  }
+  async function decodeLogos() {
+    S.logoImgs = await Promise.all(S.stores.map(st => st.logo ? loadImageFromURL(st.logo).catch(() => null) : null));
+  }
+  function renderStoreUI() {
+    const chips = $('store-chips'); chips.innerHTML = '';
+    const make = (idx, label) => {
+      const b = document.createElement('button');
+      b.className = 'chip truncate !py-2' + (S.activeStore === idx ? ' is-on' : '');
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        haptic(8);
+        S.activeStore = idx; if (idx >= 0) S.editStore = idx;
+        saveStores(); renderStoreUI(); render();
+      });
+      chips.appendChild(b);
+    };
+    make(-1, 'None');
+    S.stores.forEach((st, i) => make(i, st.name || `Store ${i + 1}`));
+
+    const ed = $('store-editor');
+    ed.classList.toggle('hidden', S.activeStore < 0);
+    const st = S.stores[S.editStore];
+    $('store-name-input').value = st.name;
+    $('logo-preview').classList.toggle('hidden', !st.logo);
+    $('logo-placeholder').classList.toggle('hidden', !!st.logo);
+    if (st.logo) $('logo-preview').src = st.logo;
+    $('logo-remove-btn').disabled = !st.logo;
+    document.querySelectorAll('.pos-btn').forEach(b => b.classList.toggle('is-on', b.dataset.pos === st.pos));
+    $('logo-size-input').value = st.size; $('logo-size-val').textContent = st.size + '%';
+    $('logo-op-input').value = st.opacity; $('logo-op-val').textContent = st.opacity + '%';
+    $('store-indicator').textContent = S.activeStore < 0 ? 'No store logo' : (S.stores[S.activeStore].name || 'Store') + (S.logoImgs[S.activeStore] ? '' : ' · no logo yet');
+  }
+  $('store-name-input').addEventListener('input', e => {
+    S.stores[S.editStore].name = e.target.value; saveStores();
+    const chip = $('store-chips').children[S.editStore + 1]; if (chip) chip.textContent = e.target.value || `Store ${S.editStore + 1}`;
+    $('store-indicator').textContent = e.target.value || 'Store';
+  });
+  $('logo-input').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    try {
+      const img = await loadImageFromURL(url);
+      const iw = img.naturalWidth || 600, ih = img.naturalHeight || 600;
+      const k = Math.min(1, 600 / Math.max(iw, ih));
+      const c = document.createElement('canvas');
+      c.width = Math.round(iw * k); c.height = Math.round(ih * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const dataUrl = c.toDataURL('image/png');
+      S.stores[S.editStore].logo = dataUrl;
+      S.logoImgs[S.editStore] = await loadImageFromURL(dataUrl);
+      saveStores(); renderStoreUI(); render();
+      toast('Logo saved for ' + (S.stores[S.editStore].name || 'store'));
+    } catch { toast('Could not read that logo'); }
+    finally { URL.revokeObjectURL(url); }
+  });
+  $('logo-remove-btn').addEventListener('click', () => {
+    S.stores[S.editStore].logo = null; S.logoImgs[S.editStore] = null;
+    saveStores(); renderStoreUI(); render();
+  });
+  document.querySelectorAll('.pos-btn').forEach(b => b.addEventListener('click', () => {
+    S.stores[S.editStore].pos = b.dataset.pos; saveStores(); renderStoreUI(); render();
+  }));
+  $('logo-size-input').addEventListener('input', e => { S.stores[S.editStore].size = +e.target.value; $('logo-size-val').textContent = e.target.value + '%'; scheduleRender(); });
+  $('logo-size-input').addEventListener('change', saveStores);
+  $('logo-op-input').addEventListener('input', e => { S.stores[S.editStore].opacity = +e.target.value; $('logo-op-val').textContent = e.target.value + '%'; scheduleRender(); });
+  $('logo-op-input').addEventListener('change', saveStores);
+
+  // ---------- 5H13 stamp ----------
+  function syncStampUI() {
+    $('stamp-toggle').checked = S.stamp;
+    $('stamp-pos').classList.toggle('opacity-40', !S.stamp);
+    document.querySelectorAll('.stamp-pos-btn').forEach(b => b.classList.toggle('is-on', b.dataset.pos === S.stampPos));
+  }
+  $('stamp-toggle').addEventListener('change', e => { S.stamp = e.target.checked; saveSettings(); syncStampUI(); render(); });
+  document.querySelectorAll('.stamp-pos-btn').forEach(b => b.addEventListener('click', () => {
+    S.stampPos = b.dataset.pos; S.stamp = true; saveSettings(); syncStampUI(); render();
+  }));
+
+  // ---------- Backdrop panel ----------
+  function syncBackdropUI() {
+    document.querySelectorAll('.bg-btn').forEach(b => b.classList.toggle('is-on', b.dataset.bg === S.backdrop));
+  }
+  document.querySelectorAll('.bg-btn').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.bg === 'custom') return; // handled by colour input
+    haptic(8); S.backdrop = b.dataset.bg; saveSettings(); syncBackdropUI(); render();
+  }));
+  $('custom-color').value = S.customBg;
+  $('custom-color').addEventListener('input', e => { S.backdrop = 'custom'; S.customBg = e.target.value; syncBackdropUI(); scheduleRender(); });
+  $('custom-color').addEventListener('change', saveSettings);
+  $('shadow-toggle').checked = S.shadow;
+  $('shadow-toggle').addEventListener('change', e => { S.shadow = e.target.checked; saveSettings(); render(); });
+
+  // ---------- Adjust panel ----------
+  $('scale-input').addEventListener('input', e => { setScaleRot(+e.target.value / 100, S.rot); $('scale-val').textContent = e.target.value + '%'; scheduleRender(); });
+  $('rot-input').addEventListener('input', e => { setScaleRot(S.scale, +e.target.value); $('rot-val').textContent = e.target.value + '°'; scheduleRender(); });
+  $('center-btn').addEventListener('click', () => { haptic(); centerSubject(); });
+  $('fit-btn').addEventListener('click', () => { haptic(); fitSubject(); });
+  $('straight-btn').addEventListener('click', () => { haptic(); setScaleRot(S.scale, 0); syncAdjustUI(); render(); });
+  $('quick-fit-btn').addEventListener('click', () => { haptic(); fitSubject(); toast('Centered & fitted'); });
+
+  // =====================================================================
+  //  CAMERA
+  // =====================================================================
+  async function openCamera(mode) {
+    if (mode) S.cam.mode = mode;
+    const label = S.cam.mode === 'label';
+    $('camera-hint').textContent = label ? 'Fit the box label in the frame' : 'Fill the square';
+    const guide = $('camera-guide');
+    guide.classList.toggle('aspect-square', !label);
+    guide.classList.toggle('aspect-[4/3]', label);
+    guide.classList.toggle('border-amber-400/80', !label);
+    guide.classList.toggle('border-indigo-400/90', label);
+    $('camera-tip').classList.toggle('hidden', !label);
+    if (!navigator.mediaDevices?.getUserMedia) return toast(label ? 'Camera needs HTTPS — use Label photo' : 'Camera needs HTTPS — use Photo library');
+    try {
+      S.cam.stream?.getTracks().forEach(t => t.stop());
+      S.cam.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: S.cam.facing }, width: { ideal: 1920 }, height: { ideal: 1920 } }, audio: false
+      });
+      const v = $('camera-feed');
+      v.srcObject = S.cam.stream;
+      v.style.transform = S.cam.facing === 'user' ? 'scaleX(-1)' : '';
+      S.cam.torch = false;
+      $('camera-modal').classList.remove('hidden'); $('camera-modal').classList.add('flex');
+    } catch (err) {
+      console.error(err);
+      toast(err.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera not available');
+    }
+  }
+  function closeCamera() {
+    S.cam.stream?.getTracks().forEach(t => t.stop());
+    S.cam.stream = null;
+    $('camera-modal').classList.add('hidden'); $('camera-modal').classList.remove('flex');
+  }
+  $('open-camera-btn').addEventListener('click', () => { setTab(null); openCamera('product'); });
+  $('camera-close-btn').addEventListener('click', closeCamera);
+  $('flip-btn').addEventListener('click', () => { haptic(); S.cam.facing = S.cam.facing === 'environment' ? 'user' : 'environment'; openCamera(); });
+  $('torch-btn').addEventListener('click', async () => {
+    const track = S.cam.stream?.getVideoTracks()[0];
+    const caps = track?.getCapabilities?.() || {};
+    if (!caps.torch) return toast('Flash not available on this camera');
+    S.cam.torch = !S.cam.torch;
+    try { await track.applyConstraints({ advanced: [{ torch: S.cam.torch }] }); toast(`Flash ${S.cam.torch ? 'on' : 'off'}`); } catch { toast('Flash not available'); }
+  });
+  $('shutter-btn').addEventListener('click', async () => {
+    const v = $('camera-feed');
+    if (!v.videoWidth) return;
+    haptic(35);
+    // Crop exactly what is inside the on-screen guide (square for products, 4:3 for labels)
+    const vr = v.getBoundingClientRect(), gr = $('camera-guide').getBoundingClientRect();
+    const k = Math.max(vr.width / v.videoWidth, vr.height / v.videoHeight);
+    const offX = (vr.width - v.videoWidth * k) / 2, offY = (vr.height - v.videoHeight * k) / 2;
+    let sw = Math.min(gr.width / k, v.videoWidth), sh = Math.min(gr.height / k, v.videoHeight);
+    let sx = (gr.left - vr.left - offX) / k, sy = (gr.top - vr.top - offY) / k;
+    if (S.cam.facing === 'user') sx = v.videoWidth - sx - sw;
+    sx = Math.max(0, Math.min(v.videoWidth - sw, sx)); sy = Math.max(0, Math.min(v.videoHeight - sh, sy));
+    const c = document.createElement('canvas');
+    c.width = Math.round(sw); c.height = Math.round(sh);
+    const g = c.getContext('2d');
+    if (S.cam.facing === 'user') { g.translate(c.width, 0); g.scale(-1, 1); }
+    g.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+    closeCamera();
+    if (S.cam.mode === 'label') { await readLabel(c); return; }
+    setImage(c);
+    await afterNewPhoto();
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && S.cam.stream) closeCamera(); });
+
+  // =====================================================================
+  //  EXPORT
+  // =====================================================================
+  function filename() {
+    const parts = [];
+    if (S.activeStore >= 0) parts.push(S.stores[S.activeStore].name);
+    parts.push(S.title.trim() || 'product');
+    const slug = parts.join('_').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'product';
+    const t = new Date(); const stamp = `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}-${String(t.getHours()).padStart(2, '0')}${String(t.getMinutes()).padStart(2, '0')}${String(t.getSeconds()).padStart(2, '0')}`;
+    return `${slug}_${stamp}.png`;
+  }
+  function exportBlob() {
+    render();
+    return new Promise((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error('blob')), 'image/png'));
+  }
+  async function savePNG() {
+    if (!S.work) return toast('Add a photo first');
+    haptic(20);
+    const blob = await exportBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename();
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast('Saved 1080×1080 PNG');
+  }
+  async function sharePNG() {
+    if (!S.work) return toast('Add a photo first');
+    haptic(20);
+    const blob = await exportBlob();
+    const file = new File([blob], filename(), { type: 'image/png' });
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: S.title || '5H13studio' }); }
+      catch (err) { if (err.name !== 'AbortError') toast('Share failed'); }
+    } else {
+      await savePNG();
+    }
+  }
+  $('save-btn').addEventListener('click', savePNG);
+  $('share-btn').addEventListener('click', sharePNG);
+
+  // =====================================================================
+  //  INSTALL / OFFLINE
+  // =====================================================================
+  const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault(); S.installPrompt = e;
+    if (!isStandalone()) { $('install-btn').classList.remove('hidden'); $('install-btn').classList.add('flex'); }
+  });
+  window.addEventListener('appinstalled', () => { $('install-btn').classList.add('hidden'); $('install-btn').classList.remove('flex'); toast('Installed to home screen'); });
+  async function promptInstall() {
+    if (S.installPrompt) {
+      S.installPrompt.prompt();
+      await S.installPrompt.userChoice.catch(() => {});
+      S.installPrompt = null;
+      $('install-btn').classList.add('hidden'); $('install-btn').classList.remove('flex');
+    } else {
+      toast(isStandalone() ? 'Already installed' : 'Use your browser menu → Add to Home Screen');
+    }
+  }
+  const openInfo = () => { $('info-modal').classList.remove('hidden'); $('info-modal').classList.add('flex'); };
+  const closeInfo = () => { $('info-modal').classList.add('hidden'); $('info-modal').classList.remove('flex'); };
+  $('install-btn').addEventListener('click', promptInstall);
+  $('install-modal-btn').addEventListener('click', promptInstall);
+  $('info-btn').addEventListener('click', openInfo);
+  $('info-close-btn').addEventListener('click', closeInfo);
+  $('info-modal').addEventListener('click', e => { if (e.target === $('info-modal')) closeInfo(); });
+  $('app-version').textContent = APP_VERSION;
+
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready)
+      .then(() => { $('sw-status').textContent = 'works offline'; })
+      .catch(() => { $('sw-status').textContent = 'online only'; });
+  } else {
+    $('sw-status').textContent = 'host on HTTPS to install';
+  }
+
+  // =====================================================================
+  //  BOOT
+  // =====================================================================
+  async function boot() {
+    setTool('move', true);
+    syncBackdropUI();
+    syncStampUI();
+    $('tol-val').textContent = S.tol; $('brush-val').textContent = S.brush + 'px';
+    try {
+      await Promise.race([
+        Promise.all(['800 40px "Bricolage Grotesque"', '500 20px Inter', '600 40px "Playfair Display"', 'italic 500 20px "Playfair Display"', '700 30px "Space Grotesk"'].map(f => document.fonts.load(f))),
+        new Promise(r => setTimeout(r, 2500))
+      ]);
+    } catch {}
+    await decodeLogos();
+    renderStoreUI();
+    await loadDemo('perfume');
+    setTab('photo');
+  }
+  boot();
+})();
