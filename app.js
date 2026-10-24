@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.6.0';
+  const APP_VERSION = '1.7.0';
   const SIZE = 1080;          // output square
   const MAX_DIM = 1200;       // working resolution for photos (keeps phones fast)
   const UNDO_LIMIT = 6;
@@ -1022,18 +1022,285 @@
     });
   }
 
+  // =====================================================================
+  //  AI TEXT READING (Gemini) — optional. Each person uses their own free Google key,
+  //  kept only on their device. If AI can't be used, the built-in reader takes over.
+  // =====================================================================
+  const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
+  const AI_TIMEOUT = 30000;
+  // Used only if the key's own model list can't be fetched. Google renames models often,
+  // so the app normally asks Google which models this key can use (see pickModels).
+  const AI_FALLBACK = { best: ['gemini-flash-latest', 'gemini-2.5-flash'], fast: ['gemini-flash-lite-latest', 'gemini-2.5-flash-lite'] };
+  const aiSaved = store.get('5h13.ai', {});
+  const AIR = {
+    key: store.get('5h13.geminiKey', '') || '',
+    engine: aiSaved.engine === 'builtin' ? 'builtin' : 'ai',
+    speed: aiSaved.speed === 'fast' ? 'fast' : 'best',
+    models: aiSaved.models || null,     // { best: [...], fast: [...] }
+    keyOk: aiSaved.keyOk ?? null        // true / false / null (unknown)
+  };
+  const saveAI = () => store.set('5h13.ai', { engine: AIR.engine, speed: AIR.speed, models: AIR.models, keyOk: AIR.keyOk });
+  const aiActive = () => AIR.engine === 'ai' && !!AIR.key && AIR.keyOk !== false && navigator.onLine;
+
+  class AIError extends Error {
+    constructor(status, message) { super(message || `HTTP ${status}`); this.status = status; }
+  }
+  async function aiFetch(key, path, body, signal) {
+    let res;
+    try {
+      res = await fetch(`${GEMINI_API}/${path}`, {
+        method: body ? 'POST' : 'GET',
+        headers: { 'x-goog-api-key': key, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        cache: 'no-store',
+        signal
+      });
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      throw new AIError(0, 'network');
+    }
+    let json = null;
+    try { json = await res.json(); } catch {}
+    if (!res.ok) throw new AIError(res.status, json?.error?.message || '');
+    return json;
+  }
+
+  // Ask Google which models this key may use (costs no reading quota)
+  async function listModels(key, signal) {
+    const names = [];
+    let token = '';
+    for (let page = 0; page < 4; page++) {
+      const j = await aiFetch(key, `models?pageSize=1000${token ? `&pageToken=${encodeURIComponent(token)}` : ''}`, null, signal);
+      for (const m of j?.models || []) {
+        if ((m.supportedGenerationMethods || []).includes('generateContent')) names.push(String(m.name).replace(/^models\//, ''));
+      }
+      token = j?.nextPageToken;
+      if (!token) break;
+    }
+    return names;
+  }
+  // Prefer Google's "latest" aliases, then the newest stable Flash / Flash-Lite
+  function pickModels(names) {
+    const ver = n => parseFloat((n.match(/^gemini-(\d+(?:\.\d+)?)-/) || [])[1] || 0);
+    const newest = re => names.filter(n => re.test(n)).sort((a, b) => ver(b) - ver(a));
+    const best = [...(names.includes('gemini-flash-latest') ? ['gemini-flash-latest'] : []), ...newest(/^gemini-\d+(\.\d+)?-flash$/)].slice(0, 3);
+    const fast = [...(names.includes('gemini-flash-lite-latest') ? ['gemini-flash-lite-latest'] : []), ...newest(/^gemini-\d+(\.\d+)?-flash-lite$/)].slice(0, 3);
+    return best.length || fast.length ? { best, fast } : null;
+  }
+  function modelOrder() {
+    const m = AIR.models || AI_FALLBACK;
+    const list = AIR.speed === 'fast' ? [...m.fast, ...m.best] : [...m.best, ...m.fast];
+    return [...new Set(list)].slice(0, 3);
+  }
+
+  const AI_PROMPT =
+    'This photo shows a product or its box/label, taken for an online store listing. ' +
+    'Read the printed text exactly as written, keeping spelling, numbers and units. ' +
+    'Return JSON: "title" = the product or brand name to use as the listing title (short, as printed); ' +
+    '"subtitle" = the key detail such as variant, size, volume, weight or model (e.g. "50 ml", "Size 42"), or "" if none; ' +
+    '"lines" = every distinct line of readable text, top to bottom. ' +
+    'If nothing is readable, return empty strings and an empty list. Never invent or guess text that is not visible.';
+  const AI_SCHEMA = {
+    type: 'OBJECT',
+    properties: { title: { type: 'STRING' }, subtitle: { type: 'STRING' }, lines: { type: 'ARRAY', items: { type: 'STRING' } } },
+    required: ['title', 'subtitle', 'lines']
+  };
+
+  async function aiReadLabel(source, cancelP) {
+    const ctrl = new AbortController();
+    cancelP.catch(() => ctrl.abort());
+    const run = async () => {
+      // First use with this key: find out which models it can use
+      if (!AIR.models) {
+        try { AIR.models = pickModels(await listModels(AIR.key, ctrl.signal)); saveAI(); }
+        catch (e) { if (e.name === 'AbortError' || [400, 401, 403].includes(e.status)) throw e; }
+      }
+      const c = ocrCanvas(source, 1600);
+      const data = c.toDataURL('image/jpeg', 0.9).split(',')[1];
+      c.width = c.height = 0;
+      const body = {
+        contents: [{ parts: [{ text: AI_PROMPT }, { inline_data: { mime_type: 'image/jpeg', data } }] }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: AI_SCHEMA }
+      };
+      let lastErr;
+      for (const model of modelOrder()) {
+        try {
+          const j = await aiFetch(AIR.key, `models/${encodeURIComponent(model)}:generateContent`, body, ctrl.signal);
+          const text = (j?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+          if (!text) throw new AIError(0, 'empty');
+          const r = JSON.parse(text);
+          return {
+            title: String(r.title || '').trim(),
+            subtitle: String(r.subtitle || '').trim(),
+            lines: Array.isArray(r.lines) ? r.lines.map(s => String(s).trim()).filter(Boolean) : []
+          };
+        } catch (e) {
+          if (e.name === 'AbortError') throw e;
+          lastErr = e;
+          // Model gone, or not on the free tier ("limit: 0") → try the next model
+          const msg = (e.message || '').toLowerCase();
+          const tryNext = e.status === 404 || (e.status === 429 && /limit:\s*0\b/.test(msg)) || (e.status === 400 && /model/.test(msg) && !/api key/.test(msg));
+          if (!tryNext) throw e;
+          if (e.status === 404) { AIR.models = null; saveAI(); }   // re-check the model list next time
+        }
+      }
+      throw lastErr || new AIError(0, 'no model');
+    };
+    try {
+      return await guarded(run(), AI_TIMEOUT, cancelP);
+    } catch (e) {
+      ctrl.abort();
+      if (e.name === 'AbortError') throw new Error('cancel');
+      throw e;
+    }
+  }
+
+  // Plain-language reason, shared by scanning and the key test
+  function aiProblem(e) {
+    const m = (e?.message || '').toLowerCase();
+    if (e?.message === 'timeout') return { text: 'AI took too long', keyBad: false };
+    if (e?.status === 400 && /api key|api_key/.test(m)) return { text: 'Google doesn’t recognise this key', keyBad: true };
+    if (e?.status === 403 && /location|region|country/.test(m)) return { text: 'Gemini isn’t available in your country', keyBad: true };
+    if (e?.status === 401 || e?.status === 403) return { text: 'This key isn’t allowed to use Gemini', keyBad: true };
+    if (e?.status === 429) return { text: 'The key’s free limit is used up for now', keyBad: false };
+    if (e?.status === 0 && e?.message === 'network') return { text: 'Couldn’t reach Google', keyBad: false };
+    if (e?.status >= 500) return { text: 'Google’s AI is busy right now', keyBad: false };
+    return { text: 'AI reading failed', keyBad: false };
+  }
+
+  function applyAIResult(r, thumb) {
+    const seen = new Set(), lines = [];
+    for (const t of [r.title, r.subtitle, ...r.lines]) {
+      const s = cleanLine(t || '');
+      if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); lines.push({ text: s }); }
+    }
+    showOcrResults(lines, thumb);
+    if (!lines.length) { toast('Couldn’t read it clearly — move closer, hold steady, avoid glare'); return; }
+    if (!S.showBadge) { S.showBadge = true; $('badge-toggle').checked = true; saveSettings(); }
+    setTitle((cleanLine(r.title) || lines[0].text).toUpperCase(), cleanLine(r.subtitle) || S.subtitle);
+    toast('Read with AI — tap a line to use it');
+  }
+
+  // ---------- AI panel ----------
+  function syncAIUI() {
+    $('ai-engine-select').value = AIR.engine;
+    $('ai-speed-select').value = AIR.speed;
+    $('ai-speed-select').disabled = AIR.engine !== 'ai';
+    const pill = $('ai-status');
+    pill.classList.remove('is-ready', 'is-warn');
+    if (AIR.engine !== 'ai') pill.textContent = 'Off';
+    else if (!AIR.key) pill.textContent = 'No key';
+    else if (AIR.keyOk === false) { pill.textContent = 'Key problem'; pill.classList.add('is-warn'); }
+    else { pill.textContent = 'On'; pill.classList.add('is-ready'); }
+  }
+  function setKeyResult(text, tone) {
+    const el = $('ai-key-result');
+    el.classList.toggle('hidden', !text);
+    el.className = `${text ? '' : 'hidden '}text-[11px] leading-snug ai-${tone || 'info'}`;
+    el.textContent = text || '';
+  }
+  let keyTestBusy = false;
+  async function checkKey(save) {
+    if (keyTestBusy) return;
+    const key = $('ai-key-input').value.trim();
+    if (!key) return setKeyResult('Paste your key first.', 'warn');
+    if (!navigator.onLine) {
+      if (save) { storeKey(key, null); return setKeyResult('Saved. You’re offline, so it will be checked on the next scan.', 'warn'); }
+      return setKeyResult('You’re offline — connect to the internet to test the key.', 'warn');
+    }
+    keyTestBusy = true;
+    $('ai-key-test').disabled = $('ai-key-save').disabled = true;
+    setKeyResult('Checking with Google…', 'info');
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 15000);
+      let names;
+      try { names = await listModels(key, ctrl.signal); } finally { clearTimeout(t); }
+      const models = pickModels(names);
+      storeKey(key, true, models);
+      if (!models) setKeyResult('✓ Key works and is saved — but no suitable Gemini model was found for it right now. The built-in reader will be used.', 'warn');
+      else setKeyResult(`✓ Key works and is saved. AI reading is on${AIR.engine === 'ai' ? '' : ' (choose “AI first” above to use it)'}.`, 'ok');
+      haptic(20);
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        if (save) storeKey(key, null);
+        setKeyResult(save ? 'Saved, but Google took too long to answer. It will be checked on the next scan.' : 'Google took too long to answer — try again.', 'warn');
+      } else {
+        const p = aiProblem(e);
+        const region = e.status === 403 && /location|region|country/i.test(e.message || '');
+        if (region) setKeyResult('✕ Gemini isn’t available in your country, so the built-in reader will be used.', 'bad');
+        else if (p.keyBad) setKeyResult(`✕ ${p.text}. Copy the whole key again from Google AI Studio.${save ? ' (Not saved.)' : ''}`, 'bad');
+        else {
+          if (save) storeKey(key, null);
+          setKeyResult(`⚠ ${p.text}.${save ? ' The key is saved and will be checked on the next scan.' : ' Try again later.'}`, 'warn');
+        }
+      }
+    } finally {
+      keyTestBusy = false;
+      $('ai-key-test').disabled = $('ai-key-save').disabled = false;
+    }
+  }
+  function storeKey(key, ok, models) {
+    if (key !== AIR.key) AIR.models = null;
+    AIR.key = key; AIR.keyOk = ok;
+    if (models !== undefined) AIR.models = models;
+    store.set('5h13.geminiKey', key);
+    saveAI(); syncAIUI();
+    $('ai-key-input').type = 'password'; $('ai-key-show').textContent = 'Show';
+  }
+
+  $('ai-key-input').value = AIR.key;
+  syncAIUI();
+  $('ai-engine-select').addEventListener('change', e => { AIR.engine = e.target.value; saveAI(); syncAIUI(); });
+  $('ai-speed-select').addEventListener('change', e => { AIR.speed = e.target.value; saveAI(); });
+  $('ai-key-input').addEventListener('input', () => setKeyResult(''));
+  $('ai-key-show').addEventListener('click', () => {
+    const show = $('ai-key-input').type === 'password';
+    $('ai-key-input').type = show ? 'text' : 'password';
+    $('ai-key-show').textContent = show ? 'Hide' : 'Show';
+  });
+  $('ai-key-save').addEventListener('click', () => checkKey(true));
+  $('ai-key-test').addEventListener('click', () => checkKey(false));
+  $('ai-key-remove').addEventListener('click', () => {
+    AIR.key = ''; AIR.keyOk = null; AIR.models = null;
+    try { localStorage.removeItem('5h13.geminiKey'); } catch {}
+    $('ai-key-input').value = '';
+    saveAI(); syncAIUI();
+    setKeyResult('Key removed from this device.', 'info');
+  });
+
   async function readLabel(source) {
     if (ocrBusy) return toast('Still reading the last label…');
     ocrBusy = true;
     setTab('text');
     const cancelP = new Promise((_, rej) => { ocrCancel = () => rej(new Error('cancel')); });
     cancelP.catch(() => {});
-    loading(ocrWorker ? 'Reading label…' : 'Preparing text reader… (first time downloads ~5 MB)');
     $('loader-cancel').classList.remove('hidden');
-    const started = Date.now(), timeLeft = () => OCR_BUDGET - (Date.now() - started);
+    let started = Date.now(), aiNote = '';
+    const timeLeft = () => OCR_BUDGET - (Date.now() - started);
     try {
-      const worker = await guarded(getOcrWorker(), OCR_LOAD_TIMEOUT, cancelP);
       const thumb = ocrCanvas(source, 320).toDataURL('image/jpeg', 0.7);
+      // 0) AI first, when the person has turned it on with their own key
+      if (aiActive()) {
+        loading('Reading label with AI…');
+        try {
+          applyAIResult(await aiReadLabel(source, cancelP), thumb);
+          if (AIR.keyOk !== true) { AIR.keyOk = true; saveAI(); syncAIUI(); }
+          return;
+        } catch (e) {
+          if (e.message === 'cancel') throw e;
+          console.warn('AI reading failed', e);
+          const p = aiProblem(e);
+          if (p.keyBad) { AIR.keyOk = false; saveAI(); syncAIUI(); }
+          aiNote = /^(Google|Gemini|AI)\b/.test(p.text) ? p.text : p.text.charAt(0).toLowerCase() + p.text.slice(1);
+          toast(`${p.text} — using the built-in reader`);
+          started = Date.now();
+        }
+      } else if (AIR.engine === 'ai' && AIR.key && AIR.keyOk !== false && !navigator.onLine) {
+        aiNote = 'you’re offline';
+      }
+      loading(ocrWorker ? 'Reading label…' : 'Preparing text reader… (first time downloads ~5 MB)');
+      const worker = await guarded(getOcrWorker(), OCR_LOAD_TIMEOUT, cancelP);
       // 1) Upright at a size that suits big label text
       ocrPhase = 'Reading label…';
       let best = await readAt(worker, source, 1000, 0, cancelP);
@@ -1053,7 +1320,7 @@
       if (!best.length) { toast('Couldn’t read it clearly — move closer, hold steady, avoid glare'); return; }
       if (!S.showBadge) { S.showBadge = true; $('badge-toggle').checked = true; saveSettings(); }
       setTitle(best[0].text.toUpperCase(), best[1]?.text ?? S.subtitle);
-      toast('Text found — tap a line to use it');
+      toast(aiNote ? `Text found with the built-in reader (AI: ${aiNote})` : 'Text found — tap a line to use it');
     } catch (err) {
       console.error(err);
       const readerWasReady = !!ocrWorker;

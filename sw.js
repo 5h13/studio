@@ -1,5 +1,5 @@
 /* 5H13studio service worker — app shell offline, everything else stale-while-revalidate */
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const SHELL = `5h13-shell-${VERSION}`;
 const RUNTIME = '5h13-runtime';
 const SHELL_FILES = [
@@ -36,6 +36,9 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || !req.url.startsWith('http')) return;
   const url = new URL(req.url);
+
+  // Google AI (Gemini) requests are never cached: key checks and readings must always be live
+  if (url.hostname.endsWith('googleapis.com')) return;
 
   // Page navigations: network first so updates arrive, cached shell when offline
   if (req.mode === 'navigate') {

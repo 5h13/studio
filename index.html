@@ -153,6 +153,71 @@
         </label>
       </div>
       <p class="text-[10px] text-slate-500">The label photo is only read for text — your product photo stays as is.</p>
+
+      <!-- AI TEXT READING (Gemini) — optional, uses the person's own free key -->
+      <details id="ai-panel" class="ai-panel">
+        <summary class="ai-summary">
+          <span class="flex min-w-0 items-center gap-2">
+            <svg aria-hidden="true" class="lucide h-4 w-4 shrink-0 text-amber-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" /><path d="M20 3v4" /><path d="M22 5h-4" /></svg>
+            <span class="truncate text-xs font-semibold text-slate-200">AI text reading <span class="font-normal text-slate-400">· Gemini</span></span>
+          </span>
+          <span id="ai-status" class="ai-pill">Off</span>
+        </summary>
+
+        <div class="space-y-2 px-3 pb-3">
+          <p class="text-[11px] leading-snug text-slate-400">Reads curved, shiny and stylish labels far better. Uses your own free Google key — if it can't be used, the built-in reader takes over.</p>
+
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="lbl" for="ai-engine-select">Reader</label>
+              <select id="ai-engine-select" class="field !px-2">
+                <option value="ai">AI first</option>
+                <option value="builtin">Built-in only</option>
+              </select>
+            </div>
+            <div>
+              <label class="lbl" for="ai-speed-select">AI model</label>
+              <select id="ai-speed-select" class="field !px-2">
+                <option value="best">Best (Flash)</option>
+                <option value="fast">Faster (Flash-Lite)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="lbl" for="ai-key-input">Gemini API key</label>
+            <div class="flex gap-1.5">
+              <input type="password" id="ai-key-input" class="field min-w-0 flex-1 font-mono" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Paste your key" />
+              <button id="ai-key-show" class="btn !px-2.5 !py-2" type="button">Show</button>
+              <button id="ai-key-save" class="btn-primary !px-3 !py-2" type="button">Save</button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between text-[11px]">
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" class="ai-link">Get a free key</a>
+            <span class="flex items-center gap-3">
+              <button id="ai-key-test" class="font-semibold text-amber-300" type="button">Test key</button>
+              <button id="ai-key-remove" class="text-slate-500" type="button">Remove</button>
+            </span>
+          </div>
+          <p id="ai-key-result" class="hidden text-[11px] leading-snug"></p>
+
+          <details class="ai-help">
+            <summary class="ai-help-summary">How to get a free key (about 2 minutes)</summary>
+            <ol class="space-y-1 px-2.5 pb-2.5 text-[11px] leading-snug text-slate-400">
+              <li><b class="text-slate-200">1.</b> Tap <b class="text-amber-300">Get a free key</b> and sign in with your Google account.</li>
+              <li><b class="text-slate-200">2.</b> Tap <b class="text-slate-200">Create API key</b> (accept the terms if asked), then copy the key.</li>
+              <li><b class="text-slate-200">3.</b> Come back, paste it above and tap <b class="text-slate-200">Save</b> — it's checked with Google straight away.</li>
+              <li class="text-[10px] text-slate-500">The free key isn't offered in every country. Without one, the built-in reader still works.</li>
+            </ol>
+          </details>
+
+          <p class="flex gap-1.5 text-[10px] leading-snug text-slate-500">
+            <svg aria-hidden="true" class="lucide ai-shield h-3.5 w-3.5 shrink-0 text-amber-400" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /><path d="m9 12 2 2 4-4" /></svg>
+            <span>Your key is kept only on this device. Label photos go straight from this device to Google — 5H13studio never sees your key or photos.</span>
+          </p>
+        </div>
+      </details>
       <div id="ocr-chips-box" class="hidden rounded-xl border border-slate-800 bg-slate-950/70 p-2">
         <div class="flex gap-2">
           <img id="ocr-thumb" alt="Label photo that was read" class="h-14 w-20 shrink-0 rounded-md border border-slate-700 object-cover" />
