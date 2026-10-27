@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.7.0';
+  const APP_VERSION = '1.8.0';
   const SIZE = 1080;          // output square
   const MAX_DIM = 1200;       // working resolution for photos (keeps phones fast)
   const UNDO_LIMIT = 6;
@@ -42,6 +42,8 @@
     work: null, wctx: null,                   // edited cutout
     bbox: null,                               // visible subject bounds in work coords
     x: SIZE / 2, y: SIZE / 2, scale: 1, rot: 0,
+    brightness: 0, contrast: 0, saturation: 0, exposure: 0,
+    crop: { x: 0, y: 0, w: 100, h: 100 },
     tool: 'move', brush: 28, tol: 35, lastOpAuto: false,
     undo: [],
     autoStrip: saved.autoStrip ?? true,
@@ -117,6 +119,9 @@
     S.wctx.putImageData(S.rawData, 0, 0);
     S.undo = []; updateUndo();
     S.lastOpAuto = false;
+    S.brightness = S.contrast = S.saturation = S.exposure = 0;
+    S.crop = { x: 0, y: 0, w: 100, h: 100 };
+    syncPhotoAdjustUI?.();
     computeBBox();
     $('empty-state').classList.add('hidden');
     $('empty-state').classList.remove('flex');
@@ -554,7 +559,11 @@
       target.translate(S.x, S.y);
       target.rotate(S.rot * Math.PI / 180);
       target.scale(S.scale, S.scale);
-      target.drawImage(S.work, -S.work.width / 2, -S.work.height / 2);
+      const cr = cropRect();
+      const exp = Math.pow(2, S.exposure);
+      target.filter = `brightness(${Math.max(0, (100 + S.brightness) * exp)}%) contrast(${100 + S.contrast}%) saturate(${100 + S.saturation}%)`;
+      target.drawImage(S.work, cr.x, cr.y, cr.w, cr.h, -cr.w / 2, -cr.h / 2, cr.w, cr.h);
+      target.filter = 'none';
       target.restore();
     }
     drawLogo(target);
@@ -1443,6 +1452,67 @@
   $('shadow-toggle').checked = S.shadow;
   $('shadow-toggle').addEventListener('change', e => { S.shadow = e.target.checked; saveSettings(); render(); });
 
+  // ---------- Photo corrections and crop ----------
+  function cropRect() {
+    if (!S.work) return { x: 0, y: 0, w: 1, h: 1 };
+    const c = S.crop;
+    const x = Math.round(S.work.width * c.x / 100), y = Math.round(S.work.height * c.y / 100);
+    const w = Math.max(1, Math.round(S.work.width * c.w / 100));
+    const h = Math.max(1, Math.round(S.work.height * c.h / 100));
+    return { x: Math.min(x, S.work.width - 1), y: Math.min(y, S.work.height - 1), w: Math.min(w, S.work.width - x), h: Math.min(h, S.work.height - y) };
+  }
+  function syncPhotoAdjustUI() {
+    const pairs = [['brightness', S.brightness], ['contrast', S.contrast], ['saturation', S.saturation], ['exposure', S.exposure]];
+    for (const [id, value] of pairs) {
+      if ($(id + '-input')) $(id + '-input').value = value;
+      if ($(id + '-val')) $(id + '-val').textContent = id === 'exposure' ? Number(value).toFixed(1) : `${value > 0 ? '+' : ''}${value}`;
+    }
+    for (const k of ['x', 'y', 'w', 'h']) {
+      if ($(`crop-${k}-input`)) $(`crop-${k}-input`).value = S.crop[k];
+      if ($(`crop-${k}-val`)) $(`crop-${k}-val`).textContent = `${Math.round(S.crop[k])}%`;
+    }
+  }
+  function bindCorrection(id, min, max) {
+    $(id + '-input').addEventListener('input', e => {
+      S[id] = Math.min(max, Math.max(min, +e.target.value));
+      $(id + '-val').textContent = id === 'exposure' ? S[id].toFixed(1) : `${S[id] > 0 ? '+' : ''}${S[id]}`;
+      scheduleRender();
+    });
+  }
+  bindCorrection('brightness', -100, 100);
+  bindCorrection('contrast', -100, 100);
+  bindCorrection('saturation', -100, 100);
+  bindCorrection('exposure', -2, 2);
+  function normalizeCrop(changed) {
+    const c = S.crop;
+    c.w = Math.max(10, Math.min(100, c.w)); c.h = Math.max(10, Math.min(100, c.h));
+    c.x = Math.max(0, Math.min(100 - c.w, c.x)); c.y = Math.max(0, Math.min(100 - c.h, c.y));
+    if (changed === 'x' && c.x + c.w > 100) c.w = 100 - c.x;
+    if (changed === 'y' && c.y + c.h > 100) c.h = 100 - c.y;
+    syncPhotoAdjustUI(); scheduleRender();
+  }
+  for (const k of ['x', 'y', 'w', 'h']) $('crop-' + k + '-input').addEventListener('input', e => { S.crop[k] = +e.target.value; normalizeCrop(k); });
+  $('crop-square-btn').addEventListener('click', () => {
+    if (!S.work) return toast('Add a photo first');
+    const side = Math.min(S.crop.w, S.crop.h); S.crop.w = S.crop.h = side; normalizeCrop('w');
+  });
+  $('crop-reset-btn').addEventListener('click', () => { S.crop = { x: 0, y: 0, w: 100, h: 100 }; syncPhotoAdjustUI(); render(); });
+  $('apply-crop-btn').addEventListener('click', () => {
+    if (!S.work) return toast('Add a photo first');
+    const r = cropRect();
+    if (r.x === 0 && r.y === 0 && r.w === S.work.width && r.h === S.work.height) return toast('Crop already covers the full photo');
+    pushUndo();
+    const cropCanvas = source => { const c = document.createElement('canvas'); c.width = r.w; c.height = r.h; c.getContext('2d', { willReadFrequently: true }).drawImage(source, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h); return c; };
+    S.raw = cropCanvas(S.raw); S.work = cropCanvas(S.work);
+    S.rawData = S.raw.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, r.w, r.h);
+    S.wctx = S.work.getContext('2d', { willReadFrequently: true });
+    S.crop = { x: 0, y: 0, w: 100, h: 100 }; S.undo = []; updateUndo();
+    computeBBox(); fitSubject(); syncPhotoAdjustUI(); toast('Crop applied');
+  });
+  $('reset-photo-adjust-btn').addEventListener('click', () => {
+    S.brightness = S.contrast = S.saturation = S.exposure = 0;
+    syncPhotoAdjustUI(); render(); toast('Photo corrections reset');
+  });
   // ---------- Adjust panel ----------
   $('scale-input').addEventListener('input', e => { setScaleRot(+e.target.value / 100, S.rot); $('scale-val').textContent = e.target.value + '%'; scheduleRender(); });
   $('rot-input').addEventListener('input', e => { setScaleRot(S.scale, +e.target.value); $('rot-val').textContent = e.target.value + '°'; scheduleRender(); });
@@ -1668,6 +1738,7 @@
     setTool('move', true);
     syncBackdropUI();
     syncStampUI();
+    syncPhotoAdjustUI();
     $('tol-val').textContent = S.tol; $('brush-val').textContent = S.brush + 'px';
     try {
       await Promise.race([

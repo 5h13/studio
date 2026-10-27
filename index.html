@@ -335,6 +335,23 @@
 
     <!-- ADJUST -->
     <div class="tab-panel space-y-3" data-panel="adjust">
+      <span class="sec block">Photo correction</span>
+      <div class="grid grid-cols-2 gap-2">
+        <div class="space-y-1"><div class="row"><span>Brightness</span><span id="brightness-val" class="val">0</span></div><input type="range" id="brightness-input" min="-100" max="100" value="0" class="slider" /></div>
+        <div class="space-y-1"><div class="row"><span>Contrast</span><span id="contrast-val" class="val">0</span></div><input type="range" id="contrast-input" min="-100" max="100" value="0" class="slider" /></div>
+        <div class="space-y-1"><div class="row"><span>Saturation</span><span id="saturation-val" class="val">0</span></div><input type="range" id="saturation-input" min="-100" max="100" value="0" class="slider" /></div>
+        <div class="space-y-1"><div class="row"><span>Exposure</span><span id="exposure-val" class="val">0.0</span></div><input type="range" id="exposure-input" min="-2" max="2" step="0.1" value="0" class="slider" /></div>
+      </div>
+      <button id="reset-photo-adjust-btn" class="btn w-full">Reset photo corrections</button>
+      <span class="sec block">Crop</span>
+      <div class="grid grid-cols-2 gap-2">
+        <div class="space-y-1"><div class="row"><span>Left</span><span id="crop-x-val" class="val">0%</span></div><input type="range" id="crop-x-input" min="0" max="90" value="0" class="slider" /></div>
+        <div class="space-y-1"><div class="row"><span>Top</span><span id="crop-y-val" class="val">0%</span></div><input type="range" id="crop-y-input" min="0" max="90" value="0" class="slider" /></div>
+        <div class="space-y-1"><div class="row"><span>Width</span><span id="crop-w-val" class="val">100%</span></div><input type="range" id="crop-w-input" min="10" max="100" value="100" class="slider" /></div>
+        <div class="space-y-1"><div class="row"><span>Height</span><span id="crop-h-val" class="val">100%</span></div><input type="range" id="crop-h-input" min="10" max="100" value="100" class="slider" /></div>
+      </div>
+      <div class="grid grid-cols-3 gap-2"><button id="crop-square-btn" class="btn">Square</button><button id="crop-reset-btn" class="btn">Reset crop</button><button id="apply-crop-btn" class="btn-primary">Apply crop</button></div>
+      <span class="sec block">Position</span>
       <div class="space-y-1">
         <div class="row"><span>Size</span><span id="scale-val" class="val">100%</span></div>
         <input type="range" id="scale-input" min="10" max="300" value="100" class="slider" />

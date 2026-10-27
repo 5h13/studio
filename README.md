@@ -1,7 +1,7 @@
 # 5H13studio — 1:1 Product Studio
 
 Installable web app for square (1080×1080) product photos for online stores:
-background removal (small AI model on the phone, with a simple colour remover for plain backgrounds), per-store logo overlays, box-label text reading (OCR), 5H13 brand stamp and backdrops, PNG export/share.
+background removal (small AI model on the phone, with a simple colour remover for plain backgrounds), crop, brightness, contrast, saturation and exposure controls, per-store logo overlays, box-label text reading (OCR), 5H13 brand stamp and backdrops, PNG export/share.
 
 **Live app:** https://5h13.github.io/studio/
 
